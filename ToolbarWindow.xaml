@@ -1,0 +1,141 @@
+<Window x:Class="RiftPen.ToolbarWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:RiftPen"
+        Title="RiftPen"
+        WindowStyle="None" AllowsTransparency="True" Background="Transparent"
+        Topmost="True" ResizeMode="NoResize" SizeToContent="WidthAndHeight" ShowActivated="False">
+    <Window.Resources>
+        <Style TargetType="ToggleButton" BasedOn="{StaticResource ToolToggle}"/>
+        <Style TargetType="Button" BasedOn="{StaticResource ToolButton}"/>
+        <Style TargetType="Rectangle" BasedOn="{StaticResource Sep}"/>
+        <Style x:Key="PopupBorder" TargetType="Border">
+            <Setter Property="Background" Value="#F21B1C21"/>
+            <Setter Property="CornerRadius" Value="8"/>
+            <Setter Property="BorderBrush" Value="#40FFFFFF"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="4"/>
+        </Style>
+    </Window.Resources>
+
+    <Border Background="#F21B1C21" CornerRadius="10" BorderBrush="#40FFFFFF" BorderThickness="1" Padding="4">
+        <StackPanel x:Name="Bar" Orientation="Horizontal">
+
+            <Border Width="16" Background="Transparent" Cursor="SizeAll" ToolTip="Drag to move"
+                    MouseLeftButtonDown="Grip_MouseLeftButtonDown">
+                <TextBlock Text="⋮" FontSize="18" Foreground="#80FFFFFF" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
+
+            <ToggleButton x:Name="DrawToggle" Padding="10,0" Click="DrawToggle_Click">
+                <TextBlock x:Name="DrawLabel" Text="✎ Draw" FontFamily="Segoe UI Semibold" FontSize="13"/>
+            </ToggleButton>
+
+            <StackPanel x:Name="Expanded" Orientation="Horizontal">
+                <Rectangle/>
+
+                <ToggleButton Tag="Select">
+                    <Path Data="M3,1 L3,16 L7,12.5 L9.6,18 L12,17 L9.4,11.4 L14.5,11.4 Z" Fill="#EEEEEE" Stretch="None"/>
+                </ToggleButton>
+                <ToggleButton Tag="Pen" Content="&#xE70F;"/>
+                <ToggleButton Tag="Highlighter" Content="&#xE7E6;"/>
+                <ToggleButton Tag="Laser">
+                    <Grid Width="20" Height="20">
+                        <Ellipse x:Name="LaserGlow" Width="16" Height="16" Fill="#55FF3B30"/>
+                        <Ellipse x:Name="LaserDot" Width="7" Height="7" Fill="#FF3B30"/>
+                        <Ellipse Width="3" Height="3" Fill="White"/>
+                    </Grid>
+                </ToggleButton>
+                <ToggleButton Tag="Eraser" Content="&#xE75C;"/>
+                <ToggleButton Tag="Line">
+                    <TextBlock Text="╱" FontFamily="Segoe UI Symbol" FontSize="16"/>
+                </ToggleButton>
+                <ToggleButton Tag="Arrow" Content="&#xE72A;"/>
+                <ToggleButton Tag="Rectangle">
+                    <Rectangle Width="16" Height="12" Margin="0" Fill="Transparent" Stroke="#EEEEEE" StrokeThickness="1.6" RadiusX="1" RadiusY="1"/>
+                </ToggleButton>
+                <ToggleButton Tag="Ellipse">
+                    <Ellipse Width="16" Height="16" Stroke="#EEEEEE" StrokeThickness="1.6"/>
+                </ToggleButton>
+                <ToggleButton Tag="Text" Content="&#xE8D2;"/>
+                <ToggleButton x:Name="MarkerBtn" Tag="Marker">
+                    <local:MarkerIcon x:Name="MarkerPreview" Width="22" Height="22"/>
+                </ToggleButton>
+                <Popup x:Name="MarkerPopup" PlacementTarget="{Binding ElementName=MarkerBtn}" Placement="Bottom"
+                       StaysOpen="False" AllowsTransparency="True">
+                    <Border Style="{StaticResource PopupBorder}">
+                        <StackPanel x:Name="MarkerList"/>
+                    </Border>
+                </Popup>
+                <ToggleButton x:Name="RangeBtn" Tag="Range">
+                    <Grid Width="20" Height="20">
+                        <Ellipse Width="20" Height="20" Stroke="#EEEEEE" StrokeThickness="1.5"/>
+                        <Ellipse Width="9" Height="9" Stroke="#EEEEEE" StrokeThickness="1.5"/>
+                        <Ellipse x:Name="RangeDot" Width="4" Height="4" Fill="#FFD60A"/>
+                    </Grid>
+                </ToggleButton>
+                <Popup x:Name="RangePopup" PlacementTarget="{Binding ElementName=RangeBtn}" Placement="Bottom"
+                       StaysOpen="False" AllowsTransparency="True">
+                    <Border Style="{StaticResource PopupBorder}">
+                        <ScrollViewer MaxHeight="520" VerticalScrollBarVisibility="Auto">
+                            <StackPanel x:Name="RangeList" MinWidth="250"/>
+                        </ScrollViewer>
+                    </Border>
+                </Popup>
+
+                <Rectangle/>
+
+                <!-- Colour + size live in one dropdown -->
+                <Button x:Name="ColorBtn" Padding="6,0" Click="ColorBtn_Click">
+                    <StackPanel Orientation="Horizontal">
+                        <Grid Width="22" Height="22">
+                            <Ellipse Width="22" Height="22" Stroke="#50FFFFFF" StrokeThickness="1"/>
+                            <Ellipse x:Name="ColorDot" Width="12" Height="12" Fill="Red"/>
+                        </Grid>
+                        <TextBlock Text="&#xE70D;" FontSize="9" Margin="4,0,0,0" VerticalAlignment="Center" Foreground="#AAFFFFFF"/>
+                    </StackPanel>
+                </Button>
+                <Popup x:Name="ColorPopup" PlacementTarget="{Binding ElementName=ColorBtn}" Placement="Bottom"
+                       StaysOpen="False" AllowsTransparency="True">
+                    <Border Style="{StaticResource PopupBorder}" Padding="10">
+                        <StackPanel>
+                            <TextBlock Text="Color" Foreground="#AAFFFFFF" FontFamily="Segoe UI" FontSize="11" Margin="2,0,0,4"/>
+                            <UniformGrid x:Name="Swatches" Columns="5" HorizontalAlignment="Left"/>
+                            <TextBlock x:Name="SizeLabel" Text="Size" Foreground="#AAFFFFFF" FontFamily="Segoe UI" FontSize="11" Margin="2,10,0,2"/>
+                            <Slider x:Name="SizeSlider" Width="170" Minimum="1" Maximum="30" IsSnapToTickEnabled="True" TickFrequency="1"
+                                    ValueChanged="Size_Changed"/>
+                        </StackPanel>
+                    </Border>
+                </Popup>
+
+                <Rectangle/>
+
+                <Button x:Name="SpaceBtn" Padding="8,0" Click="Space_Click">
+                    <StackPanel Orientation="Horizontal">
+                        <Ellipse x:Name="ApiDot" Width="8" Height="8" Fill="Gray" Margin="0,0,6,0" VerticalAlignment="Center"/>
+                        <TextBlock x:Name="SpaceLabel" Text="AUTO" FontFamily="Segoe UI Semibold" FontSize="12" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </Button>
+                <ToggleButton x:Name="TimelineBtn" Content="&#xE823;" Click="Timeline_Click"/>
+
+                <Rectangle/>
+
+                <Button x:Name="UndoBtn" Content="&#xE7A7;" Click="Undo_Click"/>
+                <Button x:Name="RedoBtn" Content="&#xE7A6;" Click="Redo_Click"/>
+                <Button x:Name="ClearBtn" Content="&#xE74D;" Click="Clear_Click"/>
+                <ToggleButton x:Name="HideBtn" Content="&#xE7B3;" Click="Hide_Click"/>
+                <Button x:Name="BoardsBtn" Content="&#xE8B7;" Click="Boards_Click"/>
+                <Popup x:Name="BoardsPopup" PlacementTarget="{Binding ElementName=BoardsBtn}" Placement="Bottom"
+                       StaysOpen="False" AllowsTransparency="True">
+                    <Border Style="{StaticResource PopupBorder}">
+                        <StackPanel x:Name="BoardsList" MinWidth="250"/>
+                    </Border>
+                </Popup>
+                <Button x:Name="ShotBtn" Content="&#xE722;" Click="Shot_Click"/>
+                <Button Content="&#xE713;" ToolTip="Settings" Click="Settings_Click"/>
+            </StackPanel>
+
+            <Button x:Name="CollapseBtn" Content="&#xE76B;" FontSize="12" Click="Collapse_Click"/>
+            <Button Content="&#xE711;" ToolTip="Quit RiftPen" Style="{StaticResource CloseButton}" Click="Quit_Click"/>
+        </StackPanel>
+    </Border>
+</Window>
