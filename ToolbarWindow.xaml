@@ -126,6 +126,7 @@
                     </StackPanel>
                 </Button>
                 <ToggleButton x:Name="TimelineBtn" Content="&#xE823;" Click="Timeline_Click"/>
+                <Button x:Name="BoardBtn" Content="&#xE909;" Click="Board_Click"/>
 
                 <Rectangle/>
 

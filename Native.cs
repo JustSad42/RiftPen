@@ -132,6 +132,12 @@ internal static class Native
     [DllImport("kernel32.dll")]
     public static extern uint GetCurrentThreadId();
 
+    [DllImport("user32.dll")]
+    public static extern IntPtr WindowFromPoint(POINT point);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
+
     public static bool IsDown(int vk) => (GetAsyncKeyState(vk) & 0x8000) != 0;
 
     // ---- GPU-composited transparency + timers ----

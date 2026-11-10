@@ -355,6 +355,7 @@ public partial class ToolbarWindow : Window
         HideBtn.ToolTip = WithKey("Hide / show drawings", "hide");
         SpotBtn.ToolTip = WithKey("Spotlight: dim everything except around the cursor", "spotlight");
         ShotBtn.ToolTip = WithKey("Screenshot with drawings (saved to Pictures\\RiftPen)", "screenshot");
+        BoardBtn.ToolTip = WithKey("Rift Board: the whole map with every champion, synced to the replay", "board");
         BoardsBtn.ToolTip = "Boards: save and load drawing layouts";
         ColorBtn.ToolTip = $"Color and size   [{S.BindingFor("sizeDown")?.Display ?? "–"} / {S.BindingFor("sizeUp")?.Display ?? "–"} changes size]";
         TimelineBtn.ToolTip = WithKey(S.Settings.TimelineEnabled
@@ -529,6 +530,8 @@ public partial class ToolbarWindow : Window
     void Hide_Click(object sender, RoutedEventArgs e) => S.Hidden = HideBtn.IsChecked == true;
     void Spot_Click(object sender, RoutedEventArgs e) => S.Spotlight = SpotBtn.IsChecked == true;
     void Shot_Click(object sender, RoutedEventArgs e) => S.RequestUi("screenshot");
+
+    void Board_Click(object sender, RoutedEventArgs e) => S.RequestUi("board");
     void Settings_Click(object sender, RoutedEventArgs e) => OpenSettings(0);
     void Quit_Click(object sender, RoutedEventArgs e) => Application.Current.Shutdown();
 }

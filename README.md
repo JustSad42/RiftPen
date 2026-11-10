@@ -42,6 +42,19 @@ Run `publish\RiftPen.exe`, or **RiftPen** from the Start menu (added on first ru
 - **Circles that follow a champion:** in the range menu, tick *Follow the camera-locked champion* (or press `F` while drawing). Lock the replay camera onto a champion, then click anywhere to attach the circle. It moves with whoever the camera is locked onto and fades out ("lock the camera to follow") while the camera is free.
 - **Minimap (automatic):** when a replay opens, RiftPen finds the minimap by itself. It pauses for a split second, hides the minimap through the Replay API and sees what changed. It does this again whenever you change minimap size, minimap side, HUD scale or resolution in League. Map drawings then also appear on the minimap, and drawing on the minimap places drawings on the map. *Find minimap now* and *Set it by hand…* are in Settings → Replay.
 
+## Rift Board
+
+A big Summoner's Rift with every champion on it, synced to the replay that's open in League. Open it with the globe button on the toolbar or `B` while drawing. Put it on a second monitor and coach from it while the replay runs.
+
+- **Finds the game by itself:** it matches the open replay to its `.rofl` file (Documents\League of Legends\Replays), then loads Riot's timeline for that game from your League client: kills, towers, objectives, and per-minute gold, XP, CS and positions.
+- **Champion positions:** while the replay plays, RiftPen reads the minimap a few times a second (the screen only, nothing in the game's memory). It finds each icon by its blue or red team ring and learns what every champion's icon actually looks like, so custom skins work too. Positions are saved per game, so any part you've watched once can be scrubbed later. Parts you haven't watched are estimated from the timeline and drawn with a dashed ring. The green stripe on the timeline shows what has been recorded. Keep League's minimap visible: when another window covers it, recording pauses.
+- **Timeline:** play/pause, ±10 s, speed, and a scrubber with the team gold difference, kills, objectives and towers. While **Linked**, scrubbing moves the replay and the replay moves the board. Unlink for a sandbox: the board moves through the game on its own and the replay stays put.
+- **Explain plays:** drag champions anywhere (the replay pauses; **Reset** or moving on in time puts them back). Turn on **Draw** (`D`) for pen, arrow, circle, range circle, ward, text, laser, eraser and select. Board drawings are map drawings: they also appear in the game at that moment of the replay, and in-game map drawings show on the board.
+- **At a glance:** champions show their level, dead champions turn grey with a respawn countdown, recent kills and objectives flash where they happened, towers and inhibitors show as destroyed, trails show the last 6 seconds of movement, and the replay camera's view is outlined. Double-click the map (or a champion) to move the replay camera there.
+- **Stats:** score, gold lead, and per champion KDA, CS, level, gold and items (items come from the game, so they show while the board is at the replay's moment), plus objectives per team. Click a champion for more detail.
+- **Riot API key (optional, ⚙):** adds item purchase history and skill order. Development keys from developer.riotgames.com expire after 24 hours.
+
+Map controls: mouse wheel zooms, drag with the left button (on empty map), right or middle button to pan, **Fit** resets the view. Space plays/pauses, ← → skip 5 s.
 ## Shortcuts
 
 Every action can be rebound in Settings → **Shortcuts**: click it, then press a key, a combo, or a mouse button (middle / Mouse 4 / Mouse 5). Each shortcut also has a **scope**:
@@ -72,6 +85,7 @@ When nothing is happening, RiftPen checks in only 4 times a second (about 0.5% o
 - Drawings and replay notes (autosaved): `%APPDATA%\RiftPen\drawings.json`
 - Boards: `%APPDATA%\RiftPen\boards\*.rpboard`
 - Champion data cache: `%APPDATA%\RiftPen\ddragon\`
+- Rift Board game data and recorded positions: `%APPDATA%\RiftPen\games\`
 - Errors: `%APPDATA%\RiftPen\error.log`
 
 ## Tips

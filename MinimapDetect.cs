@@ -82,7 +82,7 @@ public static class MinimapDetect
         }
     }
 
-    static byte[] Pixels(BitmapSource src)
+    internal static byte[] Pixels(BitmapSource src)
     {
         var bgra = src.Format == PixelFormats.Bgra32 || src.Format == PixelFormats.Bgr32 ? src : new FormatConvertedBitmap(src, PixelFormats.Bgra32, null, 0);
         int stride = bgra.PixelWidth * 4;

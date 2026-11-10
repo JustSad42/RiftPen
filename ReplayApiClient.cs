@@ -28,13 +28,15 @@ public sealed class ReplayApiClient : IDisposable
     sealed record Sample(CameraState Cam, long Timestamp, Vec3 Velocity);
 
     /// <summary>Replay clock from /replay/playback. Stamp = when it was read (Stopwatch ticks).</summary>
-    public sealed record PlaybackState(double Time, double Length, bool Paused, double Speed, long Stamp);
+    public sealed record PlaybackState(double Time, double Length, bool Paused, double Speed, long Stamp, bool Seeking = false);
 
     volatile PlaybackState? playback;
     volatile bool refreshPlayback = true;
     long lastPlaybackTicks;
 
     public PlaybackState? Playback => playback;
+
+    public double? ReplayTimeOrNull() => CurrentTime;
 
     /// <summary>Current replay time in seconds, advanced smoothly between reads.</summary>
     public double? CurrentTime
@@ -111,7 +113,8 @@ public sealed class ReplayApiClient : IDisposable
             var r = doc.RootElement;
             double D(string name, double fallback) => r.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetDouble() : fallback;
             bool paused = r.TryGetProperty("paused", out var pz) && pz.ValueKind == JsonValueKind.True;
-            playback = new PlaybackState(D("time", 0), D("length", 0), paused, D("speed", 1), Stopwatch.GetTimestamp());
+            bool seeking = r.TryGetProperty("seeking", out var sk) && sk.ValueKind == JsonValueKind.True;
+            playback = new PlaybackState(D("time", 0), D("length", 0), paused, D("speed", 1), Stopwatch.GetTimestamp(), seeking);
         }
         catch (OperationCanceledException) { throw; }
         catch { /* keep the last reading */ }

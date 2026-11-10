@@ -4,7 +4,7 @@ using System.Text.Json;
 
 namespace RiftPen;
 
-public sealed record ChampionInfo(string Id, string Name);
+public sealed record ChampionInfo(string Id, string Name, int NumericKey = 0);
 
 /// <summary>One range a champion has. Detail lists per-rank values when they differ.</summary>
 public sealed record ChampionRange(string Slot, string SpellName, double Radius, string Detail);
@@ -47,7 +47,8 @@ public static class DataDragon
         var v = await GetVersionAsync();
         using var doc = JsonDocument.Parse(await GetCachedAsync($"{Base}/cdn/{v}/data/en_US/champion.json", Path.Combine(v, "champion.json")));
         champions = doc.RootElement.GetProperty("data").EnumerateObject()
-            .Select(p => new ChampionInfo(p.Value.GetProperty("id").GetString()!, p.Value.GetProperty("name").GetString()!))
+            .Select(p => new ChampionInfo(p.Value.GetProperty("id").GetString()!, p.Value.GetProperty("name").GetString()!,
+                int.TryParse(p.Value.TryGetProperty("key", out var k) ? k.GetString() : null, out var nk) ? nk : 0))
             .OrderBy(c => c.Name)
             .ToList();
         return champions;
@@ -81,6 +82,27 @@ public static class DataDragon
         }
         return result;
     }
+
+    /// <summary>Local path of a cached image (champion square icon, item icon, or the Summoner's Rift map art).</summary>
+    public static async Task<string?> GetImageAsync(string kind, string name)
+    {
+        try
+        {
+            var v = await GetVersionAsync();
+            string rel = Path.Combine(v, "img", kind, name + ".png");
+            var path = Path.Combine(CacheRoot, rel);
+            if (File.Exists(path)) return path;
+            var bytes = await http.GetByteArrayAsync($"{Base}/cdn/{v}/img/{kind}/{name}.png");
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            await File.WriteAllBytesAsync(path, bytes);
+            return path;
+        }
+        catch { return null; }
+    }
+
+    public static Task<string?> ChampionIconAsync(string championKey) => GetImageAsync("champion", championKey);
+    public static Task<string?> ItemIconAsync(int itemId) => GetImageAsync("item", itemId.ToString());
+    public static Task<string?> MapImageAsync() => GetImageAsync("map", "map11");
 
     static async Task<string> GetCachedAsync(string url, string relative)
     {

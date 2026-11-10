@@ -12,6 +12,47 @@ public partial class App : Application
     {
         base.OnStartup(e);
 
+        if (e.Args.Length >= 2 && e.Args[0] == "--track-test")
+        {
+            selfTest = true;
+            var folder = e.Args[1];
+            double at = e.Args.Length >= 3 && double.TryParse(e.Args[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var t) ? t : 360;
+            _ = Dispatcher.InvokeAsync(async () =>
+            {
+                try { await SelfTest.RunTrackTest(folder, at); }
+                catch (Exception ex) { System.IO.File.WriteAllText(System.IO.Path.Combine(folder, "tracktest_crash.txt"), ex.ToString()); }
+                Shutdown();
+            });
+            return;
+        }
+
+        if (e.Args.Length >= 2 && e.Args[0] == "--board-test")
+        {
+            selfTest = true;
+            var folder = e.Args[1];
+            ShutdownMode = ShutdownMode.OnExplicitShutdown;
+            _ = Dispatcher.InvokeAsync(async () =>
+            {
+                try { await SelfTest.RunBoardTest(folder); }
+                catch (Exception ex) { System.IO.File.WriteAllText(System.IO.Path.Combine(folder, "boardtest_crash.txt"), ex.ToString()); }
+                Shutdown();
+            });
+            return;
+        }
+
+        if (e.Args.Length >= 2 && e.Args[0] == "--game-test")
+        {
+            selfTest = true;
+            var folder = e.Args[1];
+            _ = Dispatcher.InvokeAsync(async () =>
+            {
+                try { await SelfTest.RunGameTest(folder); }
+                catch (Exception ex) { System.IO.File.WriteAllText(System.IO.Path.Combine(folder, "gametest_crash.txt"), ex.ToString()); }
+                Shutdown();
+            });
+            return;
+        }
+
         if (e.Args.Length >= 2 && e.Args[0] == "--selftest")
         {
             selfTest = true;
@@ -64,6 +105,7 @@ public partial class App : Application
                 case "screenshot": overlay.TakeScreenshot(toolbar); break;
                 case "toggleToolbar": toolbar.ToggleVisible(); break;
                 case "notes": toolbar.OpenNotes(); break;
+                case "board": RiftBoardWindow.Open(); break;
                 case "ping": overlay.Surface.PingAtCursor(); break;
                 case "detectMinimap": overlay.DetectMinimap(automatic: false); break;
                 case "minimapPicked": toolbar.OpenSettings(SettingsWindow.ReplayTab); break;
@@ -94,6 +136,7 @@ public partial class App : Application
         }
 
         S.Replay.Start();
+        RiftSession.I.Start(Dispatcher);
     }
 
     protected override void OnExit(ExitEventArgs e)
@@ -106,6 +149,7 @@ public partial class App : Application
             S.SaveNow();
             S.Settings.Save();
         }
+        if (!selfTest) RiftSession.I.Stop();
         S.Replay.Dispose();
         mutex?.Dispose();
         base.OnExit(e);

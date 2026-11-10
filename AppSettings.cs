@@ -91,6 +91,13 @@ public sealed class AppSettings
     public bool AutoDetectMinimap { get; set; } = true;
     public bool StartMenuShortcutDone { get; set; }
 
+    // Rift Board
+    /// <summary>Optional Riot developer/personal API key: adds item purchases, wards, skill order and damage.</summary>
+    public string? RiotApiKey { get; set; }
+    public bool TrackMinimap { get; set; } = true;
+    public bool BoardCleanMap { get; set; }
+    public double[]? BoardWindow { get; set; }
+
     // Notes timeline strip: centre x and top y as fractions of the League window.
     public bool ShowNotesTimeline { get; set; } = true;
     public double[] TimelineStripPos { get; set; } = { 0.5, 0.09 };

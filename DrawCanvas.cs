@@ -87,6 +87,20 @@ public sealed class DrawCanvas : FrameworkElement
     /// <summary>Mouse position in this element's coordinates, even while the overlay is click-through.</summary>
     public Func<Point>? CursorProvider { get; set; }
 
+    /// <summary>Set when this canvas draws on the Rift Board (a flat top-down map) instead of over the game.</summary>
+    public IBoardView? Board { get; set; }
+
+    /// <summary>Mouse input draws right now.</summary>
+    bool InputOn => Board != null ? Board.Drawing : S.DrawMode;
+
+    bool ShownAt(DrawItem it, out double alpha) => Board != null ? S.Visible(it, Board.Time, out alpha) : S.Visible(it, out alpha);
+
+    void Stamp(DrawItem it)
+    {
+        if (Board != null) S.Stamp(it, Board.Time);
+        else S.Stamp(it);
+    }
+
     public DrawCanvas()
     {
         Focusable = true;
@@ -116,7 +130,7 @@ public sealed class DrawCanvas : FrameworkElement
     double Ppd => VisualTreeHelper.GetDpi(this).PixelsPerDip;
 
     /// <summary>True when map drawings can be shown and placed right now.</summary>
-    public bool CanUseMap => worldVisible && Projector.Valid;
+    public bool CanUseMap => Board != null || (worldVisible && Projector.Valid);
 
     /// <summary>Called by the overlay with the latest camera and League viewport. Returns true if anything changed.</summary>
     public bool Frame(CameraState? cam, Rect viewport, bool visible)
@@ -172,7 +186,7 @@ public sealed class DrawCanvas : FrameworkElement
 
     public void UpdateCursor()
     {
-        Cursor = !S.DrawMode ? null : S.PickingMinimap ? Cursors.Cross : S.Tool switch
+        Cursor = !InputOn ? null : S.PickingMinimap ? Cursors.Cross : S.Tool switch
         {
             ToolKind.Text => Cursors.IBeam,
             ToolKind.Eraser => Cursors.Hand,
@@ -189,7 +203,7 @@ public sealed class DrawCanvas : FrameworkElement
     }
 
     /// <summary>Shown and placeable right now (timeline, replay and camera all agree).</summary>
-    bool IsShown(DrawItem it) => S.Visible(it, out _) && (it.Space == Space.Screen || CanUseMap);
+    bool IsShown(DrawItem it) => ShownAt(it, out _) && (it.Space == Space.Screen ? Board == null : CanUseMap);
 
     // ---------------------------------------------------------------- minimap mapping
 
@@ -223,13 +237,13 @@ public sealed class DrawCanvas : FrameworkElement
     }
 
     bool OnMinimap(Point p) =>
-        S.Settings.MinimapInput && CanUseMap && S.SpaceMode != SpaceMode.Screen && MinimapRect is Rect r && r.Contains(p);
+        Board == null && S.Settings.MinimapInput && CanUseMap && S.SpaceMode != SpaceMode.Screen && MinimapRect is Rect r && r.Contains(p);
 
     // ---------------------------------------------------------------- input
 
     protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e)
     {
-        if (!S.DrawMode) return;
+        if (!InputOn) return;
         e.Handled = true;
         CommitText();
         Focus();
@@ -274,7 +288,7 @@ public sealed class DrawCanvas : FrameworkElement
             var preset = S.CurrentRange;
             if (preset == null) { Flash("No range circles yet. Add some in Settings → Range circles."); return; }
             if (!CanUseMap) { Flash("Range circles go on the map: open a replay with the Replay API on."); return; }
-            bool follow = S.Settings.RangeFollow;
+            bool follow = Board == null && S.Settings.RangeFollow;
             Point centre;
             if (follow)
             {
@@ -312,7 +326,7 @@ public sealed class DrawCanvas : FrameworkElement
         if (S.Tool == ToolKind.Marker)
         {
             item.Points.Add(stored);
-            S.Stamp(item);
+            Stamp(item);
             S.AddItem(item);
             return;
         }
@@ -328,7 +342,7 @@ public sealed class DrawCanvas : FrameworkElement
 
     protected override void OnMouseMove(MouseEventArgs e)
     {
-        if (!S.DrawMode) return;
+        if (!InputOn) return;
         var p = e.GetPosition(this);
         if (picking) { pickEnd = p; InvalidateVisual(); return; }
         if (erasing) { EraseAt(p); return; }
@@ -368,7 +382,7 @@ public sealed class DrawCanvas : FrameworkElement
 
     protected override void OnMouseRightButtonDown(MouseButtonEventArgs e)
     {
-        if (!S.DrawMode) return;
+        if (!InputOn) return;
         e.Handled = true;
         if (current != null)
         {
@@ -380,7 +394,7 @@ public sealed class DrawCanvas : FrameworkElement
 
     protected override void OnMouseWheel(MouseWheelEventArgs e)
     {
-        if (!S.DrawMode || S.Tool != ToolKind.Select || S.Selected == null) return;
+        if (!InputOn || S.Tool != ToolKind.Select || S.Selected == null) return;
         e.Handled = true;
         S.ScaleSelected(e.Delta > 0 ? 1.1 : 1 / 1.1);
     }
@@ -478,7 +492,7 @@ public sealed class DrawCanvas : FrameworkElement
             else if (IsComplete(it))
             {
                 if (it.Kind is ToolKind.Pen or ToolKind.Highlighter) Simplify(it);
-                S.Stamp(it);
+                Stamp(it);
                 S.AddItem(it);
             }
             InvalidateVisual();
@@ -540,9 +554,12 @@ public sealed class DrawCanvas : FrameworkElement
         };
     }
 
+    bool BoardProject(Point world, out Point view) { view = Board!.WorldToView(world); return true; }
+    bool BoardUnproject(Point view, out Point world) { world = Board!.ViewToWorld(view); return true; }
+
     Space ResolveSpace()
     {
-        if (viaMinimap) return Space.World;
+        if (viaMinimap || Board != null) return Space.World;
         switch (S.SpaceMode)
         {
             case SpaceMode.Screen:
@@ -557,7 +574,7 @@ public sealed class DrawCanvas : FrameworkElement
     }
 
     bool ToWorld(Point screen, out Point world) =>
-        viaMinimap ? MinimapUnproject(screen, out world) : Projector.TryUnproject(screen, out world);
+        Board != null ? BoardUnproject(screen, out world) : viaMinimap ? MinimapUnproject(screen, out world) : Projector.TryUnproject(screen, out world);
 
     bool ToStore(Point screen, Space space, out Point stored)
     {
@@ -566,7 +583,7 @@ public sealed class DrawCanvas : FrameworkElement
     }
 
     bool MapPoint(Point world, out Point screen) =>
-        minimapPass ? MinimapProject(world.X, world.Y, out screen) : Projector.TryProject(world.X, world.Y, out screen);
+        Board != null && !minimapPass ? BoardProject(world, out screen) : minimapPass ? MinimapProject(world.X, world.Y, out screen) : Projector.TryProject(world.X, world.Y, out screen);
 
     bool TryScreen(DrawItem it, Point stored, out Point screen)
     {
@@ -601,7 +618,7 @@ public sealed class DrawCanvas : FrameworkElement
         if (S.Selected is not { } it) return;
         Vector delta;
         if (it.Space == Space.Screen) delta = p - lastScreen;
-        else if (Projector.TryUnproject(lastScreen, out var a) && Projector.TryUnproject(p, out var b)) delta = b - a;
+        else if (ToWorld(lastScreen, out var a) && ToWorld(p, out var b)) delta = b - a;
         else return;
         for (int i = 0; i < it.Points.Count; i++) it.Points[i] += delta;
         lastScreen = p;
@@ -701,7 +718,7 @@ public sealed class DrawCanvas : FrameworkElement
         var text = box.Text.Trim();
         if (text.Length == 0) return;
         var item = new DrawItem { Kind = ToolKind.Text, Space = editSpace, Color = editColor, Thickness = editThickness, Text = text, Points = { editStored } };
-        S.Stamp(item);
+        Stamp(item);
         S.AddItem(item);
     }
 
@@ -716,8 +733,49 @@ public sealed class DrawCanvas : FrameworkElement
 
     // ---------------------------------------------------------------- rendering
 
+    /// <summary>On the Rift Board only map drawings show, at the board's moment.</summary>
+    void RenderBoard(DrawingContext dc)
+    {
+        if (InputOn) dc.DrawRectangle(HitBrush, null, new Rect(RenderSize));
+        if (S.Hidden) return;
+        foreach (var it in S.ContextItems)
+        {
+            if (it.Space != Space.World || !ShownAt(it, out double alpha)) continue;
+            if (alpha < 1) dc.PushOpacity(alpha);
+            RenderItem(dc, it);
+            if (alpha < 1) dc.Pop();
+        }
+        if (current != null)
+        {
+            if (current.Kind == ToolKind.Laser) RenderLaser(dc, current, 1);
+            else RenderItem(dc, current);
+        }
+        foreach (var (laser, released) in lasers)
+        {
+            double age = (DateTime.Now - released).TotalSeconds, hold = S.Settings.LaserSeconds;
+            double alpha = age < hold ? 1 : Math.Clamp(1 - (age - hold) / 0.6, 0, 1);
+            if (alpha > 0) RenderLaser(dc, laser, alpha);
+        }
+        if (S.Tool == ToolKind.Select && S.Selected is { } sel && IsShown(sel)) DrawSelection(dc, sel);
+        DrawGhost(dc);
+        DrawPings(dc, true);
+        if (status != null && DateTime.Now < statusUntil) Label(dc, status, new Point(RenderSize.Width / 2, 28), 13);
+    }
+
+    /// <summary>Advances lasers, pings and messages on the board; true while something is still animating.</summary>
+    public bool TickBoard()
+    {
+        if (lasers.Count > 0) lasers.RemoveAll(l => (DateTime.Now - l.Released).TotalSeconds > S.Settings.LaserSeconds + 0.6);
+        if (pings.Count > 0) pings.RemoveAll(p => (DateTime.Now - p.At).TotalSeconds > PingSeconds);
+        if (status != null && DateTime.Now > statusUntil) { status = null; InvalidateVisual(); }
+        bool busy = lasers.Count > 0 || pings.Count > 0;
+        if (busy) InvalidateVisual();
+        return busy;
+    }
+
     protected override void OnRender(DrawingContext dc)
     {
+        if (Board != null) { RenderBoard(dc); return; }
         if (S.DrawMode) dc.DrawRectangle(HitBrush, null, new Rect(RenderSize)); // lets the window catch clicks
 
         if (!S.Hidden)
@@ -738,7 +796,7 @@ public sealed class DrawCanvas : FrameworkElement
             {
                 if (it.Space == Space.Screen && it.ReplayKey == null) continue; // in the cached layer
                 if (it.Space == Space.World && !map) continue;
-                if (!S.Visible(it, out double alpha)) continue;
+                if (!ShownAt(it, out double alpha)) continue;
                 if (alpha < 1) dc.PushOpacity(alpha);
                 RenderItem(dc, it);
                 if (alpha < 1) dc.Pop();
@@ -776,7 +834,7 @@ public sealed class DrawCanvas : FrameworkElement
         {
             Point c;
             if (space == Space.Screen) c = pos;
-            else if (!map || !Projector.TryProject(pos.X, pos.Y, out c)) continue;
+            else if (!map || !MapPoint(pos, out c)) continue;
             double age = (DateTime.Now - at).TotalSeconds;
             for (int ring = 0; ring < 2; ring++)
             {
@@ -819,12 +877,12 @@ public sealed class DrawCanvas : FrameworkElement
     /// <summary>Faint copy of the range circle or marker under the cursor, before you click.</summary>
     void DrawGhost(DrawingContext dc)
     {
-        if (!S.DrawMode || hover is not Point h || current != null || S.WheelOpen) return;
+        if (!InputOn || hover is not Point h || current != null || S.WheelOpen) return;
         if (S.Tool == ToolKind.Range && S.CurrentRange is { } preset && CanUseMap)
         {
             bool old = viaMinimap;
             viaMinimap = OnMinimap(h);
-            bool follow = S.Settings.RangeFollow;
+            bool follow = Board == null && S.Settings.RangeFollow;
             Point w = default;
             bool ok = follow ? followLocked && Projector.TryLookAt(out w) : ToWorld(h, out w);
             if (ok)

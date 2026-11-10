@@ -168,6 +168,42 @@ internal static class Screenshot
         }
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    struct BITMAPINFOHEADER
+    {
+        public int biSize, biWidth, biHeight;
+        public short biPlanes, biBitCount;
+        public int biCompression, biSizeImage, biXPelsPerMeter, biYPelsPerMeter, biClrUsed, biClrImportant;
+    }
+    [DllImport("gdi32.dll")] static extern int GetDIBits(IntPtr dc, IntPtr bmp, uint start, uint lines, byte[] bits, ref BITMAPINFOHEADER info, uint usage);
+
+    /// <summary>
+    /// Raw BGRA pixels of a screen area, top row first. Without CAPTUREBLT, layered windows (RiftPen's own overlay)
+    /// are left out, so only the game shows.
+    /// </summary>
+    public static byte[]? CaptureBgra(Native.RECT r, bool includeOverlays = false)
+    {
+        if (r.Width <= 0 || r.Height <= 0) return null;
+        IntPtr screen = GetDC(IntPtr.Zero);
+        IntPtr mem = CreateCompatibleDC(screen);
+        IntPtr bmp = CreateCompatibleBitmap(screen, r.Width, r.Height);
+        IntPtr old = SelectObject(mem, bmp);
+        try
+        {
+            if (!BitBlt(mem, 0, 0, r.Width, r.Height, screen, r.Left, r.Top, SRCCOPY | (includeOverlays ? CAPTUREBLT : 0))) return null;
+            SelectObject(mem, old);
+            var info = new BITMAPINFOHEADER { biSize = Marshal.SizeOf<BITMAPINFOHEADER>(), biWidth = r.Width, biHeight = -r.Height, biPlanes = 1, biBitCount = 32 };
+            var bits = new byte[r.Width * r.Height * 4];
+            return GetDIBits(mem, bmp, 0, (uint)r.Height, bits, ref info, 0) == r.Height ? bits : null;
+        }
+        finally
+        {
+            DeleteObject(bmp);
+            DeleteDC(mem);
+            ReleaseDC(IntPtr.Zero, screen);
+        }
+    }
+
     public static string Save(BitmapSource image, string folder)
     {
         Directory.CreateDirectory(folder);

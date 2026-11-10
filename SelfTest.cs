@@ -198,6 +198,220 @@ internal static class SelfTest
 
     static string P(bool ok) => ok ? "PASS" : "FAIL";
 
+    /// <summary>
+    /// `--track-test <folder> [seconds]`: pause the open replay on a timeline frame, find every champion on the
+    /// minimap, and compare with Riot's recorded positions for that moment.
+    /// </summary>
+    public static async Task RunTrackTest(string folder, double atTime)
+    {
+        Directory.CreateDirectory(folder);
+        var log = new StringBuilder();
+        var S = AppState.I;
+        S.Replay.Start();
+        using var live = new LiveClient();
+        live.Start();
+        for (int i = 0; i < 40 && (S.Replay.Playback == null || live.Players.Count == 0); i++) await Task.Delay(250);
+        var match = ReplayFiles.FindMatch(S.Replay.Playback?.Length ?? 0, live.Players.Select(p => p.ChampionKey));
+        if (match == null) { log.AppendLine("No replay matched."); File.WriteAllText(Path.Combine(folder, "tracktest.txt"), log.ToString()); return; }
+        var game = await GameLoader.LoadAsync(match.Platform, match.GameId);
+
+        var leagueHwnd = Native.FindLeagueWindow();
+        if (!Native.TryGetClientScreenRect(leagueHwnd, out var league)) { log.AppendLine("League window not found."); File.WriteAllText(Path.Combine(folder, "tracktest.txt"), log.ToString()); return; }
+
+        double[]? frac = S.Settings.MinimapRect;
+        if (frac == null)
+        {
+            var (rect, msg) = await MinimapDetect.DetectAsync(league, _ => { });
+            log.AppendLine("Minimap detection: " + msg);
+            frac = rect;
+        }
+        if (frac == null) { File.WriteAllText(Path.Combine(folder, "tracktest.txt"), log.ToString()); return; }
+        var mm = new Native.RECT
+        {
+            Left = league.Left + (int)Math.Round(frac[0] * league.Width),
+            Top = league.Top + (int)Math.Round(frac[1] * league.Height),
+        };
+        mm.Right = mm.Left + (int)Math.Round(frac[2] * league.Width);
+        mm.Bottom = mm.Top + (int)Math.Round(frac[3] * league.Height);
+        log.AppendLine($"Minimap on screen: {mm.Left},{mm.Top} {mm.Width}x{mm.Height}");
+
+        var tracker = await ChampionTracker.CreateAsync(game);
+        var tracks = new GameTracks("test");
+        int w = mm.Width, h = mm.Height;
+        var allErrors = new List<double>();
+        int idRight = 0, idTotal = 0;
+
+        // For each checkpoint: play the 15 s before a timeline frame while tracking, then compare with Riot's positions.
+        foreach (double want in new[] { atTime, atTime + 240, atTime + 540 })
+        {
+            var frame = game.Frames.OrderBy(f => Math.Abs(f.Time - want)).First();
+            S.Replay.SetPaused(true);
+            await Task.Delay(300);
+            S.Replay.Seek(frame.Time - 15);
+            await Task.Delay(3000);
+            tracker.ResetMotion();
+            S.Replay.SetPaused(false);
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            int passes = 0;
+            double procMs = 0;
+            byte[]? lastPx = null;
+            List<MinimapVision.Ring>? lastRings = null;
+            List<ChampionTracker.Sighting>? lastSeen = null;
+            while (sw.Elapsed.TotalSeconds < 25)
+            {
+                double t = S.Replay.CurrentTime ?? 0;
+                if (t > frame.Time + 2) break;
+                var px = Screenshot.CaptureBgra(mm);
+                if (px == null) { await Task.Delay(200); continue; }
+                var ps = System.Diagnostics.Stopwatch.StartNew();
+                var seen = tracker.Process(px, w, h, t, key => live.Players.FirstOrDefault(p => p.ChampionKey == key)?.IsDead == true, out var rings);
+                procMs += ps.Elapsed.TotalMilliseconds;
+                passes++;
+                foreach (var s in seen) tracks.Add(s.ParticipantId, t, s.World);
+                if (t <= frame.Time + 0.3) { lastPx = px; lastRings = rings; lastSeen = seen; }
+                await Task.Delay(150);
+            }
+            S.Replay.SetPaused(true);
+            log.AppendLine();
+            log.AppendLine($"== Frame at {frame.Time:0.0}s: {passes} passes, {procMs / Math.Max(1, passes):0.0} ms each, learned icons {tracker.LearnedCount}/10");
+
+            var errors = new List<double>();
+            foreach (var p in game.Participants)
+            {
+                if (!frame.Participants.TryGetValue(p.Id, out var pf) || pf.Position is not Point tp) continue;
+                bool got = tracks.TryGet(p.Id, frame.Time, out var pos);
+                // Identity check: is the champion's ring nearest the truth labelled with this champion?
+                string idNote = "";
+                if (lastSeen != null && lastRings != null)
+                {
+                    var tpx = MinimapVision.ToPixel(tp, w, h);
+                    var near = lastSeen.Where(s => game.Participants.First(x => x.Id == s.ParticipantId).Team == p.Team)
+                                       .OrderBy(s => (s.Pixel - tpx).Length).FirstOrDefault();
+                    if (near != null && (near.Pixel - tpx).Length < 25)
+                    {
+                        idTotal++;
+                        if (near.ParticipantId == p.Id) idRight++;
+                        idNote = near.ParticipantId == p.Id ? " id ok" : $" id WRONG (nearest icon labelled {near.ChampionKey})";
+                    }
+                }
+                if (got) { errors.Add((pos - tp).Length); allErrors.Add((pos - tp).Length); }
+                log.AppendLine($"  {p.ChampionKey,-12} Riot ({tp.X:0},{tp.Y:0}) " + (got ? $"tracked ({pos.X:0},{pos.Y:0}) error {(pos - tp).Length:0}" : "not tracked") + idNote);
+            }
+            if (errors.Count > 0) log.AppendLine($"  median error {errors.OrderBy(x => x).ElementAt(errors.Count / 2):0} units over {errors.Count} champions");
+
+            if (lastPx != null)
+            {
+                var img = BitmapSource.Create(w, h, 96, 96, PixelFormats.Bgra32, null, lastPx, w * 4);
+                var dv = new DrawingVisual();
+                using (var dc = dv.RenderOpen())
+                {
+                    dc.DrawImage(img, new Rect(0, 0, w, h));
+                    foreach (var r in lastRings!)
+                        dc.DrawEllipse(null, new Pen(r.Team == 100 ? Brushes.Cyan : Brushes.Orange, 1), r.Center, 3, 3);
+                    foreach (var p in game.Participants)
+                        if (frame.Participants.TryGetValue(p.Id, out var pf) && pf.Position is Point tp)
+                            dc.DrawEllipse(null, new Pen(Brushes.Lime, 2), MinimapVision.ToPixel(tp, w, h), 4, 4);
+                    foreach (var s in lastSeen!)
+                    {
+                        var ft = new FormattedText(s.ChampionKey, System.Globalization.CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
+                            new Typeface("Segoe UI"), 11, s.Hidden ? Brushes.Gray : s.Confident ? Brushes.Yellow : Brushes.White, 1);
+                        dc.DrawRectangle(new SolidColorBrush(Color.FromArgb(170, 0, 0, 0)), null, new Rect(s.Pixel.X - ft.Width / 2, s.Pixel.Y + 12, ft.Width, ft.Height));
+                        dc.DrawText(ft, new Point(s.Pixel.X - ft.Width / 2, s.Pixel.Y + 12));
+                    }
+                }
+                var rtb = new RenderTargetBitmap(w, h, 96, 96, PixelFormats.Pbgra32);
+                rtb.Render(dv);
+                var enc = new PngBitmapEncoder();
+                enc.Frames.Add(BitmapFrame.Create(rtb));
+                using var fs = File.Create(Path.Combine(folder, $"track_{frame.Time:0}.png"));
+                enc.Save(fs);
+            }
+        }
+        log.AppendLine();
+        if (allErrors.Count > 0) log.AppendLine($"Overall median error {allErrors.OrderBy(x => x).ElementAt(allErrors.Count / 2):0} units, identity {idRight}/{idTotal} right");
+        File.WriteAllText(Path.Combine(folder, "tracktest.txt"), log.ToString());
+    }
+
+    /// <summary>`--board-test <folder>`: open the Rift Board on the open replay, play a bit, and save screenshots of it.</summary>
+    public static async Task RunBoardTest(string folder)
+    {
+        Directory.CreateDirectory(folder);
+        var log = new StringBuilder();
+        var S = AppState.I;
+        S.AutosaveEnabled = false;
+        S.Replay.Start();
+        var R = RiftSession.I;
+        R.Start(Application.Current.Dispatcher);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (R.Game == null && sw.Elapsed.TotalSeconds < 40) await Task.Delay(250);
+        log.AppendLine($"Game: {R.Game?.Key ?? "none"} after {sw.Elapsed.TotalSeconds:0.0}s; status '{R.Status}'");
+        if (R.Game == null) { File.WriteAllText(Path.Combine(folder, "boardtest.txt"), log.ToString()); return; }
+
+        RiftBoardWindow.Open();
+        var w = RiftBoardWindow.Instance!;
+        S.Replay.SetPaused(true);
+        await Task.Delay(300);
+        S.Replay.Seek(590);
+        await Task.Delay(2500);
+        S.Replay.SetPaused(false);
+        await Task.Delay(12000);
+        S.Replay.SetPaused(true);
+        await Task.Delay(1500);
+        log.AppendLine($"Recorded samples: {R.Tracks?.SampleCount}; track status '{R.TrackStatus}'");
+        double now = S.Replay.CurrentTime ?? 0;
+        foreach (var p in R.Game.Participants)
+        {
+            var st = R.StateAt(p, now);
+            log.AppendLine($"  {p.ChampionKey,-12} {st.Quality,-9} ({st.Pos.X:0},{st.Pos.Y:0}) lvl {st.Level}{(st.Dead ? $" dead {st.RespawnIn:0}s" : "")}");
+        }
+        w.TestDraw(new DrawItem { Kind = ToolKind.Arrow, Space = Space.World, Color = Colors.Yellow, Thickness = 6, Points = { new Point(5000, 5000), new Point(8000, 8000) } });
+        w.TestSelect(R.Game.Participants[0].Id);
+        await Task.Delay(800);
+        w.Snapshot(Path.Combine(folder, "board_linked.png"));
+
+        // Sandbox: jump ahead without moving the replay, drag a champion.
+        w.TestSandbox(1250);
+        w.TestMove(R.Game.Participants[5].Id, new Point(7400, 7400));
+        await Task.Delay(800);
+        w.Snapshot(Path.Combine(folder, "board_sandbox.png"));
+        log.AppendLine($"Replay time stayed at {S.Replay.CurrentTime:0.0}s while the board showed 1250s");
+        S.RemoveItems(S.Items.Where(i => i.Kind == ToolKind.Arrow && i.Color == Colors.Yellow).ToList());
+        w.Close();
+        File.WriteAllText(Path.Combine(folder, "boardtest.txt"), log.ToString());
+    }
+
+    /// <summary>`--game-test <folder>`: identify the open replay and load its game data (needs a replay running).</summary>
+    public static async Task RunGameTest(string folder)
+    {
+        Directory.CreateDirectory(folder);
+        var log = new StringBuilder();
+        var S = AppState.I;
+        S.Replay.Start();
+        using var live = new LiveClient();
+        live.Start();
+        for (int i = 0; i < 40 && (S.Replay.Playback == null || live.Players.Count == 0); i++) await Task.Delay(250);
+        log.AppendLine($"Replay connected: {S.Replay.Connected}, length {S.Replay.Playback?.Length:0.0}s, live players: {live.Players.Count}");
+        foreach (var p in live.Players)
+            log.AppendLine($"  {p.ChampionKey,-12} team {p.Team} {p.Position,-8} lvl {p.Level} {p.Kills}/{p.Deaths}/{p.Assists} cs {p.CreepScore} items {p.Items.Length} ({p.ItemValue}g)");
+
+        var match = ReplayFiles.FindMatch(S.Replay.Playback?.Length ?? 0, live.Players.Select(p => p.ChampionKey));
+        log.AppendLine($"Matched replay file: {match?.Path ?? "none"}");
+        if (match != null)
+        {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            try
+            {
+                var game = await GameLoader.LoadAsync(match.Platform, match.GameId);
+                log.AppendLine($"Loaded {game.Key} from {game.Source} in {sw.ElapsedMilliseconds} ms: length {game.Length:0}s, {game.Frames.Count} frames, {game.Events.Count} events");
+                foreach (var p in game.Participants)
+                    log.AppendLine($"  #{p.Id} {p.ChampionName} ({p.ChampionKey}) team {p.Team} {p.Lane} {p.Kills}/{p.Deaths}/{p.Assists}");
+                log.AppendLine("  events: " + string.Join(", ", game.Events.GroupBy(e => e.Type).Select(g => $"{g.Key}={g.Count()}")));
+            }
+            catch (Exception ex) { log.AppendLine("Load failed: " + ex.Message); }
+        }
+        File.WriteAllText(Path.Combine(folder, "gametest.txt"), log.ToString());
+    }
+
     /// <summary>`--demo`: a few screen drawings so the live overlay can be checked visually.</summary>
     public static void AddDemoItems()
     {

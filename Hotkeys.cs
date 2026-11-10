@@ -158,6 +158,7 @@ public static class HotkeyCatalog
             new("noteNext", "Jump to next note", "Replay", HotkeyBinding.Of(Key.Right, shift: true)),
             new("timeline", "Timeline notes on/off", "Replay", HotkeyBinding.None()),
             new("notes", "Notes list for this replay", "Replay", HotkeyBinding.Of(Key.N)),
+            new("board", "Rift Board (big map of the whole game)", "Replay", HotkeyBinding.Of(Key.B)),
         };
         for (int i = 0; i < 10; i++)
             list.Add(new($"color:{i}", $"Color {(i + 1) % 10} ({ColorNames[i]})", "Colors", HotkeyBinding.Of(i == 9 ? Key.D0 : Key.D1 + i)));

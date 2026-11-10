@@ -258,11 +258,13 @@ public sealed class AppState
     public double? ReplayTime => Replay.CurrentTime;
 
     /// <summary>Ties a new drawing to the current replay moment (when timeline notes are on).</summary>
-    public void Stamp(DrawItem it)
+    public void Stamp(DrawItem it) => Stamp(it, ReplayTime);
+
+    /// <summary>Ties a drawing to replay moment <paramref name="t"/> (the Rift Board can be at a different moment than the replay).</summary>
+    public void Stamp(DrawItem it, double? t)
     {
         if (!Settings.TimelineEnabled || it.Kind == ToolKind.Laser) return;
         var key = ReplayKey;
-        var t = ReplayTime;
         if (key == null || t == null) return;
         it.ReplayKey = key;
         it.TimeStart = t;
@@ -270,13 +272,16 @@ public sealed class AppState
     }
 
     /// <summary>Whether a drawing belongs on screen right now, and how faded it is (0–1).</summary>
-    public bool Visible(DrawItem it, out double alpha)
+    public bool Visible(DrawItem it, out double alpha) => Visible(it, ReplayTime, out alpha);
+
+    /// <summary>Same, at replay moment <paramref name="time"/>.</summary>
+    public bool Visible(DrawItem it, double? time, out double alpha)
     {
         alpha = 1;
         if (it.ReplayKey == null) return true;
         if (it.ReplayKey != ReplayKey) return false;
         if (it.TimeStart is not double start) return true;
-        if (ReplayTime is not double now) return false;
+        if (time is not double now) return false;
         if (now < start - 0.3) return false;
         if (it.TimeEnd is double end && now > end) return false;
         double fadeIn = Math.Clamp((now - (start - 0.3)) / 0.3, 0, 1);
@@ -417,6 +422,7 @@ public sealed class AppState
             case "screenshot":
             case "toggleToolbar":
             case "notes":
+            case "board":
             case "ping":
                 UiRequest?.Invoke(id);
                 return;
