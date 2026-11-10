@@ -890,6 +890,25 @@ public sealed class RiftBoardWindow : Window
                    "positions are saved per game, so anything you've watched once can be scrubbed later.",
             Foreground = Dim, TextWrapping = TextWrapping.Wrap, FontSize = 12, Margin = new Thickness(22, 0, 0, 12),
         });
+        sp.Children.Add(new TextBlock { Text = "Learned icons", FontWeight = FontWeights.SemiBold });
+        var iconsInfo = new TextBlock
+        {
+            Text = $"RiftPen remembers what each champion's minimap icon looks like (including custom skins) for {IconLibrary.Shared.ChampionCount} champions, " +
+                   "so new replays recognise them right away. Forget them if champions keep getting mixed up.",
+            Foreground = Dim, TextWrapping = TextWrapping.Wrap, FontSize = 12, Margin = new Thickness(0, 4, 0, 6),
+        };
+        sp.Children.Add(iconsInfo);
+        var forget = MakeButton("", "Forget every learned icon; they're learned again as replays play", (_, _) =>
+        {
+            if (MessageBox.Show(dlg, "Forget all learned champion icons? RiftPen will learn them again as you watch replays.", "Rift Board",
+                    MessageBoxButton.OKCancel, MessageBoxImage.Question) != MessageBoxResult.OK) return;
+            IconLibrary.Shared.Clear();
+            R.Reload();
+            iconsInfo.Text = "Learned icons forgotten. They'll be learned again as replays play.";
+        }, "Forget learned icons");
+        forget.HorizontalAlignment = HorizontalAlignment.Left;
+        forget.Margin = new Thickness(0, 0, 0, 14);
+        sp.Children.Add(forget);
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
         var save = MakeButton("", "", (_, _) =>
         {

@@ -184,6 +184,15 @@ internal static class SelfTest
             S.RemoveItems(new[] { follow });
         }
 
+        // The replay notes bar can be hidden and brought back.
+        {
+            bool before = S.Settings.ShowNotesTimeline;
+            S.RunAction("notesBar", true);
+            bool flipped = S.Settings.ShowNotesTimeline != before;
+            S.RunAction("notesBar", true);
+            log.AppendLine($"Notes bar toggle hides and shows it again: {P(flipped && S.Settings.ShowNotesTimeline == before)}");
+        }
+
         // Spotlight + ping render.
         S.Spotlight = true;
         RenderTo(Path.Combine(folder, "selftest_spotlight.png"), cam, viewport, c => { c.PingAtCursor(); });
@@ -236,6 +245,7 @@ internal static class SelfTest
         log.AppendLine($"Minimap on screen: {mm.Left},{mm.Top} {mm.Width}x{mm.Height}");
 
         var tracker = await ChampionTracker.CreateAsync(game);
+        log.AppendLine($"Started with saved icons for {tracker.PreloadedCount}/10 champions");
         var tracks = new GameTracks("test");
         int w = mm.Width, h = mm.Height;
         var allErrors = new List<double>();
@@ -253,6 +263,7 @@ internal static class SelfTest
             S.Replay.SetPaused(false);
             var sw = System.Diagnostics.Stopwatch.StartNew();
             int passes = 0;
+            var earlyScores = new List<double>();
             double procMs = 0;
             byte[]? lastPx = null;
             List<MinimapVision.Ring>? lastRings = null;
@@ -268,12 +279,13 @@ internal static class SelfTest
                 procMs += ps.Elapsed.TotalMilliseconds;
                 passes++;
                 foreach (var s in seen) tracks.Add(s.ParticipantId, t, s.World);
+                if (passes <= 5) earlyScores.AddRange(seen.Where(s => !s.Hidden).Select(s => s.Appearance));
                 if (t <= frame.Time + 0.3) { lastPx = px; lastRings = rings; lastSeen = seen; }
                 await Task.Delay(150);
             }
             S.Replay.SetPaused(true);
             log.AppendLine();
-            log.AppendLine($"== Frame at {frame.Time:0.0}s: {passes} passes, {procMs / Math.Max(1, passes):0.0} ms each, learned icons {tracker.LearnedCount}/10");
+            log.AppendLine($"== Frame at {frame.Time:0.0}s: {passes} passes, {procMs / Math.Max(1, passes):0.0} ms each, learned icons {tracker.LearnedCount}/10, first-second match score {(earlyScores.Count > 0 ? earlyScores.Average() : 0):0.00}");
 
             var errors = new List<double>();
             foreach (var p in game.Participants)
@@ -295,7 +307,7 @@ internal static class SelfTest
                     }
                 }
                 if (got) { errors.Add((pos - tp).Length); allErrors.Add((pos - tp).Length); }
-                log.AppendLine($"  {p.ChampionKey,-12} Riot ({tp.X:0},{tp.Y:0}) " + (got ? $"tracked ({pos.X:0},{pos.Y:0}) error {(pos - tp).Length:0}" : "not tracked") + idNote);
+                log.AppendLine($"  {p.ChampionKey,-12} Riot ({tp.X:0},{tp.Y:0}) " + (got ? $"tracked ({pos.X:0},{pos.Y:0}) error {(pos - tp).Length:0}" : "not tracked") + idNote + (lastSeen?.FirstOrDefault(s => s.ParticipantId == p.Id && !s.Hidden) is { } ls ? $" match {ls.Appearance:0.00}" : ""));
             }
             if (errors.Count > 0) log.AppendLine($"  median error {errors.OrderBy(x => x).ElementAt(errors.Count / 2):0} units over {errors.Count} champions");
 
@@ -328,6 +340,7 @@ internal static class SelfTest
             }
         }
         log.AppendLine();
+        IconLibrary.Shared.Save();
         if (allErrors.Count > 0) log.AppendLine($"Overall median error {allErrors.OrderBy(x => x).ElementAt(allErrors.Count / 2):0} units, identity {idRight}/{idTotal} right");
         File.WriteAllText(Path.Combine(folder, "tracktest.txt"), log.ToString());
     }

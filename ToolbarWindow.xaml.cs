@@ -360,7 +360,20 @@ public partial class ToolbarWindow : Window
         ColorBtn.ToolTip = $"Color and size   [{S.BindingFor("sizeDown")?.Display ?? "–"} / {S.BindingFor("sizeUp")?.Display ?? "–"} changes size]";
         TimelineBtn.ToolTip = WithKey(S.Settings.TimelineEnabled
             ? $"Timeline notes ON: in a replay, new drawings appear at this moment and stay {(S.Settings.NoteDurationSec > 0 ? $"{S.Settings.NoteDurationSec:0} seconds" : "until the end")}"
-            : "Timeline notes OFF: new drawings stay up regardless of replay time", "timeline");
+            : "Timeline notes OFF: new drawings stay up regardless of replay time", "timeline") +
+            $"\nRight-click: {(S.Settings.ShowNotesTimeline ? "hide" : "show")} the replay notes bar{(S.BindingFor("notesBar") is { } nb ? $" [{nb.Display}]" : "")}";
+        if (TimelineBtn.ContextMenu == null)
+        {
+            var barItem = new MenuItem { Header = "Show the replay notes bar", IsCheckable = true };
+            barItem.Click += (_, _) => S.RunAction("notesBar", true);
+            var listItem = new MenuItem { Header = "Notes list…" };
+            listItem.Click += (_, _) => S.RequestUi("notes");
+            var menu = new ContextMenu();
+            menu.Items.Add(barItem);
+            menu.Items.Add(listItem);
+            menu.Opened += (_, _) => barItem.IsChecked = S.Settings.ShowNotesTimeline;
+            TimelineBtn.ContextMenu = menu;
+        }
         var shapeKey = S.BindingFor("tool:" + S.LastShape)?.Display;
         ShapeBtn.ToolTip = $"Shapes: line, arrow, rectangle, circle (last used: {ShapeName(S.LastShape)}{(shapeKey != null ? $" [{shapeKey}]" : "")}). Shift snaps; on the map, circles grow from the center.";
         CollapseBtn.ToolTip = collapsed ? "Expand toolbar" : "Collapse toolbar";

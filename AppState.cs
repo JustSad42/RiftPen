@@ -426,6 +426,14 @@ public sealed class AppState
             case "ping":
                 UiRequest?.Invoke(id);
                 return;
+            case "notesBar":
+                Settings.ShowNotesTimeline = !Settings.ShowNotesTimeline;
+                Settings.Save();
+                Say(Settings.ShowNotesTimeline
+                    ? "Replay notes bar shown."
+                    : $"Replay notes bar hidden. Bring it back with {BindingFor("notesBar")?.Display ?? "the toolbar's timeline button (right-click)"}.");
+                Raise();
+                return;
             case "timeline":
                 Settings.TimelineEnabled = !Settings.TimelineEnabled;
                 Say(Settings.TimelineEnabled ? "Timeline notes on: new drawings follow the replay." : "Timeline notes off: new drawings stay up.");

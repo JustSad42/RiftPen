@@ -93,11 +93,22 @@ public sealed class TimelineWindow : Window
             Cursor = Cursors.Hand, ToolTip = "Notes list",
         };
         list.MouseLeftButtonDown += (_, e) => { OpenNotesRequested?.Invoke(); e.Handled = true; };
+        var close = new TextBlock
+        {
+            Text = "", FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"), FontSize = 11,
+            Foreground = new SolidColorBrush(Color.FromArgb(150, 255, 255, 255)), VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(4, 0, 6, 0), Cursor = Cursors.Hand,
+        };
+        close.MouseEnter += (_, _) => close.ToolTip =
+            $"Hide the notes bar{(S.BindingFor("notesBar") is { } b ? $" [{b.Display}]" : "")}. Bring it back with that shortcut or by right-clicking the toolbar's timeline button.";
+        close.MouseLeftButtonDown += (_, e) => { S.RunAction("notesBar", true); e.Handled = true; };
 
         var dock = new DockPanel();
         DockPanel.SetDock(grip, Dock.Left);
+        DockPanel.SetDock(close, Dock.Right);
         DockPanel.SetDock(list, Dock.Right);
         dock.Children.Add(grip);
+        dock.Children.Add(close);
         dock.Children.Add(list);
         dock.Children.Add(bar);
         Content = new Border

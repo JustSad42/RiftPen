@@ -157,6 +157,9 @@ public static class MinimapVision
     const int G = 16;
     static readonly (double U, double V)[] Grid = BuildGrid();
 
+    /// <summary>Length of a portrait description (changes only if the sampling grid does).</summary>
+    public static int DescriptionLength => Grid.Length * 3;
+
     static (double, double)[] BuildGrid()
     {
         var list = new List<(double, double)>();
@@ -256,6 +259,10 @@ public sealed class ChampionTracker
         public readonly List<float[]> Art = new();
         public float[]? Learned;
         public int LearnCount;
+        /// <summary>Looks learned in earlier replays (one per skin seen), from <see cref="IconLibrary"/>.</summary>
+        public readonly List<float[]> Known = new();
+        /// <summary>A saved look clearly matched this game's icon, so it counts as learned already.</summary>
+        public bool KnownMatched;
         public Point? LastWorld;
         public double LastTime = double.NaN;
         public double LastReal = double.NaN;
@@ -293,21 +300,45 @@ public sealed class ChampionTracker
                 }
             }
             catch { /* no art: identify by position and elimination only */ }
+            c.Known.AddRange(IconLibrary.Shared.LooksFor(p.ChampionKey));
             t.champs.Add(c);
         }
         return t;
     }
 
-    /// <summary>How many champions' real minimap icons have been learned.</summary>
-    public int LearnedCount => champs.Count(c => c.LearnCount >= LearnedAfter);
+    /// <summary>How many champions' real minimap icons are known (learned this game, or recognised from an earlier one).</summary>
+    public int LearnedCount => champs.Count(c => c.LearnCount >= LearnedAfter || c.KnownMatched);
+
+    /// <summary>Champions that started this game with saved looks from earlier replays.</summary>
+    public int PreloadedCount => champs.Count(c => c.Known.Count > 0);
+
+    static double BestOf(List<float[]> looks, float[] desc) => looks.Count == 0 ? -1 : looks.Max(a => MinimapVision.Similarity(a, desc));
 
     double Appearance(Champ c, float[] desc)
     {
-        if (c.Learned != null && c.LearnCount >= LearnedAfter) return MinimapVision.Similarity(c.Learned, desc);
-        double best = c.Art.Count == 0 ? 0 : c.Art.Max(a => MinimapVision.Similarity(a, desc));
+        // Saved looks were each confirmed several times before, so they're trusted like a look learned this game.
+        double known = BestOf(c.Known, desc);
+        if (c.Learned != null && c.LearnCount >= LearnedAfter) return Math.Max(MinimapVision.Similarity(c.Learned, desc), known);
+        double best = Math.Max(Math.Max(BestOf(c.Art, desc), 0), known);
         // A partly learned icon can already vouch for a match, but not yet against one.
         if (c.Learned != null) best = Math.Max(best, MinimapVision.Similarity(c.Learned, desc));
         return best;
+    }
+
+    /// <summary>
+    /// Saves a champion's learned look for later replays, unless it looks more like another champion in this game
+    /// (a sign the identification went wrong, which would then repeat in every later game).
+    /// </summary>
+    void Remember(Champ c)
+    {
+        if (c.Learned == null) return;
+        foreach (var o in champs)
+        {
+            if (o == c) continue;
+            if (BestOf(o.Art, c.Learned) >= 0.75) return;
+            if (o.Learned != null && o.LearnCount >= LearnedAfter && MinimapVision.Similarity(o.Learned, c.Learned) >= 0.85) return;
+        }
+        IconLibrary.Shared.Remember(c.P.ChampionKey, c.Learned);
     }
 
     /// <summary>Where the per-minute timeline says the champion roughly is.</summary>
@@ -431,6 +462,9 @@ public sealed class ChampionTracker
                 {
                     c.Learned = c.Learned == null ? (float[])desc[k].Clone() : MinimapVision.Blend(c.Learned, desc[k], 0.2);
                     c.LearnCount++;
+                    if (!c.KnownMatched && BestOf(c.Known, desc[k]) >= 0.85) c.KnownMatched = true;
+                    // Keep it for later replays once it's settled, and refresh it now and then.
+                    if (c.LearnCount == LearnedAfter || c.LearnCount % 25 == 0) Remember(c);
                 }
                 c.LastWorld = world[k];
                 c.LastTime = time;
@@ -454,6 +488,132 @@ public sealed class ChampionTracker
             result.Add(new Sighting(c.P.Id, c.P.ChampionKey, pos, pile.Center, 0, false) { Hidden = true });
         }
         return result;
+    }
+}
+
+/// <summary>
+/// Minimap icons learned in earlier replays, so a new replay recognises champions from the first second.
+/// Each champion keeps up to four looks (one per skin it has been seen in); a look is only saved after it was
+/// confirmed several times in one game.
+/// </summary>
+public sealed class IconLibrary
+{
+    public sealed class Look
+    {
+        public required float[] V;
+        public int Uses;
+        public DateTime LastUsed;
+    }
+
+    const int MaxLooks = 4;
+    const int Magic = 0x31495052; // "RPI1"
+    readonly Dictionary<string, List<Look>> byChampion = new(StringComparer.OrdinalIgnoreCase);
+    readonly object gate = new();
+
+    public static IconLibrary Shared { get; } = Load();
+    public bool Dirty { get; private set; }
+
+    static string FilePath => Path.Combine(AppSettings.Folder, "learned-icons.bin");
+
+    public int ChampionCount { get { lock (gate) return byChampion.Count; } }
+
+    public List<float[]> LooksFor(string championKey)
+    {
+        lock (gate)
+            return byChampion.TryGetValue(championKey, out var l) ? l.Select(x => (float[])x.V.Clone()).ToList() : new List<float[]>();
+    }
+
+    /// <summary>Adds a champion's look, or refines the saved one it matches (same skin).</summary>
+    public void Remember(string championKey, float[] look)
+    {
+        if (look.Length != MinimapVision.DescriptionLength) return;
+        lock (gate)
+        {
+            if (!byChampion.TryGetValue(championKey, out var list)) byChampion[championKey] = list = new List<Look>();
+            var same = list.Select(l => (Look: l, Sim: MinimapVision.Similarity(l.V, look))).OrderByDescending(x => x.Sim).FirstOrDefault();
+            if (same.Look != null && same.Sim >= 0.9)
+            {
+                same.Look.V = MinimapVision.Blend(same.Look.V, look, 0.3);
+                same.Look.Uses++;
+                same.Look.LastUsed = DateTime.Now;
+            }
+            else
+            {
+                if (list.Count >= MaxLooks) list.Remove(list.OrderBy(l => l.Uses).ThenBy(l => l.LastUsed).First());
+                list.Add(new Look { V = (float[])look.Clone(), Uses = 1, LastUsed = DateTime.Now });
+            }
+            Dirty = true;
+        }
+    }
+
+    public void Clear()
+    {
+        lock (gate) { byChampion.Clear(); Dirty = true; }
+        Save();
+    }
+
+    static IconLibrary Load()
+    {
+        var lib = new IconLibrary();
+        try
+        {
+            if (!File.Exists(FilePath)) return lib;
+            using var r = new BinaryReader(File.OpenRead(FilePath));
+            if (r.ReadInt32() != Magic) return lib;
+            int champions = r.ReadInt32();
+            for (int i = 0; i < champions; i++)
+            {
+                string key = r.ReadString();
+                int n = r.ReadInt32();
+                var list = new List<Look>();
+                for (int k = 0; k < n; k++)
+                {
+                    int uses = r.ReadInt32();
+                    var last = new DateTime(r.ReadInt64());
+                    int len = r.ReadInt32();
+                    var v = new float[len];
+                    for (int j = 0; j < len; j++) v[j] = r.ReadSingle();
+                    // Saved by an older version with a different sampling grid: no longer comparable.
+                    if (len == MinimapVision.DescriptionLength) list.Add(new Look { V = v, Uses = uses, LastUsed = last });
+                }
+                if (list.Count > 0) lib.byChampion[key] = list;
+            }
+        }
+        catch (Exception ex) { AppSettings.LogError(ex); }
+        return lib;
+    }
+
+    public void Save()
+    {
+        try
+        {
+            lock (gate)
+            {
+                if (!Dirty) return;
+                Directory.CreateDirectory(AppSettings.Folder);
+                var tmp = FilePath + ".tmp";
+                using (var w = new BinaryWriter(File.Create(tmp)))
+                {
+                    w.Write(Magic);
+                    w.Write(byChampion.Count);
+                    foreach (var (key, list) in byChampion)
+                    {
+                        w.Write(key);
+                        w.Write(list.Count);
+                        foreach (var l in list)
+                        {
+                            w.Write(l.Uses);
+                            w.Write(l.LastUsed.Ticks);
+                            w.Write(l.V.Length);
+                            foreach (var f in l.V) w.Write(f);
+                        }
+                    }
+                }
+                File.Move(tmp, FilePath, overwrite: true);
+                Dirty = false;
+            }
+        }
+        catch (Exception ex) { AppSettings.LogError(ex); }
     }
 }
 

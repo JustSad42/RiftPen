@@ -51,6 +51,7 @@ public sealed class RiftSession
         cts.Cancel();
         try { loop?.Wait(1500); } catch { }
         Tracks?.Save();
+        IconLibrary.Shared.Save();
         Live.Dispose();
     }
 
@@ -71,6 +72,7 @@ public sealed class RiftSession
     void Unload()
     {
         Tracks?.Save();
+        IconLibrary.Shared.Save();
         Game = null;
         Tracks = null;
         tracker = null;
@@ -142,6 +144,7 @@ public sealed class RiftSession
                 if (Tracks is { Dirty: true } && (DateTime.Now - lastSave).TotalSeconds > 15)
                 {
                     Tracks.Save();
+                    IconLibrary.Shared.Save();
                     lastSave = DateTime.Now;
                 }
             }
@@ -214,7 +217,8 @@ public sealed class RiftSession
         Interlocked.Increment(ref version);
         SetTrack(seen.Count == 0
             ? "No champion icons found on the minimap (is it showing?)."
-            : $"Recording positions from the minimap · learned {tracker.LearnedCount}/{Game!.Participants.Count} icons");
+            : $"Recording positions from the minimap · knows {tracker.LearnedCount}/{Game!.Participants.Count} icons" +
+              (tracker.PreloadedCount > 0 ? $" ({tracker.PreloadedCount} remembered from earlier replays)" : ""));
         await Task.Delay(pb.Paused ? 300 : 180, ct);
     }
 
