@@ -79,6 +79,12 @@ public sealed class AppSettings
     public Dictionary<string, ToolStyle> ToolStyles { get; set; } = new();
     public string LastShape { get; set; } = nameof(ToolKind.Arrow);
 
+    // Picked last time (restored at start-up)
+    public string? LastTool { get; set; }
+    public string? LastSpaceMode { get; set; }
+    public string? LastMarker { get; set; }
+    public string? LastRangeId { get; set; }
+
     /// <summary>New range circles follow the champion the replay camera is locked onto.</summary>
     public bool RangeFollow { get; set; }
 
@@ -96,6 +102,12 @@ public sealed class AppSettings
     public string? RiotApiKey { get; set; }
     public bool TrackMinimap { get; set; } = true;
     public bool BoardCleanMap { get; set; }
+    public bool BoardTrails { get; set; } = true;
+    /// <summary>Board moves with the replay (off = sandbox).</summary>
+    public bool BoardLinked { get; set; } = true;
+    public double BoardZoom { get; set; } = 1;
+    /// <summary>World point (X, Z) at the centre of the board view.</summary>
+    public double[]? BoardCenter { get; set; }
     public double[]? BoardWindow { get; set; }
 
     // Notes timeline strip: centre x and top y as fractions of the League window.
@@ -151,12 +163,19 @@ public sealed class AppSettings
         return s;
     }
 
+    string? lastWritten;
+
     public void Save()
     {
         try
         {
             Directory.CreateDirectory(Folder);
-            File.WriteAllText(FilePath, JsonSerializer.Serialize(this, Json));
+            var json = JsonSerializer.Serialize(this, Json);
+            if (json == lastWritten && File.Exists(FilePath)) return; // nothing changed since the last write
+            var tmp = FilePath + ".tmp";
+            File.WriteAllText(tmp, json);
+            File.Move(tmp, FilePath, overwrite: true); // never leaves a half-written file if RiftPen is killed mid-save
+            lastWritten = json;
         }
         catch { /* settings are a convenience; never crash over them */ }
     }

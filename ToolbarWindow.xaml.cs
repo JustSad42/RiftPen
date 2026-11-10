@@ -103,6 +103,7 @@ public partial class ToolbarWindow : Window
         {
             S.Settings.ToolbarLeft = Left;
             S.Settings.ToolbarTop = Top;
+            S.SaveSettingsSoon();
         };
 
         ApplyCollapsed();
@@ -525,6 +526,7 @@ public partial class ToolbarWindow : Window
     {
         collapsed = !collapsed;
         if (!S.Settings.AutoCollapseToolbar) S.Settings.ToolbarCollapsed = collapsed;
+        S.SaveSettingsSoon();
         ApplyCollapsed();
     }
 

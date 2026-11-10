@@ -70,6 +70,30 @@ public sealed class AppState
         try { color = (Color)ColorConverter.ConvertFromString(Settings.Color); }
         catch { color = Palette[0]; }
         thickness = Math.Clamp(Settings.Thickness, 1, 30);
+
+        // Pick up where you left off.
+        if (Enum.TryParse<ToolKind>(Settings.LastTool, out var t)) tool = t;
+        if (Enum.TryParse<SpaceMode>(Settings.LastSpaceMode, out var sm)) spaceMode = sm;
+        if (Enum.TryParse<MarkerKind>(Settings.LastMarker, out var mk)) marker = mk;
+        int ri = Settings.RangePresets.ToList().FindIndex(p => p.Id == Settings.LastRangeId);
+        if (ri >= 0) rangeIndex = ri;
+    }
+
+    /// <summary>Write settings to disk a moment after anything changes (on in the real app, off in self-tests).</summary>
+    public bool SettingsAutosave { get; set; }
+    DispatcherTimer? settingsTimer;
+
+    /// <summary>Saves settings shortly (changes in quick succession are written once).</summary>
+    public void SaveSettingsSoon()
+    {
+        if (!SettingsAutosave) return;
+        if (settingsTimer == null)
+        {
+            settingsTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+            settingsTimer.Tick += (_, _) => { settingsTimer.Stop(); Settings.Save(); };
+        }
+        settingsTimer.Stop();
+        settingsTimer.Start();
     }
 
     // ---------------------------------------------------------------- tool state
@@ -83,6 +107,7 @@ public sealed class AppState
             // Each tool keeps its own colour and size (the laser stays red, the highlighter yellow…).
             if (RemembersStyle(tool)) Settings.ToolStyles[tool.ToString()] = new ToolStyle { Color = color.ToString(), Thickness = thickness };
             tool = value;
+            Settings.LastTool = value.ToString();
             if (RemembersStyle(value) &&
                 (Settings.ToolStyles.TryGetValue(value.ToString(), out var style) || DefaultStyles.TryGetValue(value, out style)))
             {
@@ -141,10 +166,10 @@ public sealed class AppState
         Raise();
     }
 
-    public MarkerKind Marker { get => marker; set { if (marker != value) { marker = value; Raise(); } } }
-    public SpaceMode SpaceMode { get => spaceMode; set { if (spaceMode != value) { spaceMode = value; Raise(); } } }
+    public MarkerKind Marker { get => marker; set { if (marker != value) { marker = value; Settings.LastMarker = value.ToString(); Raise(); } } }
+    public SpaceMode SpaceMode { get => spaceMode; set { if (spaceMode != value) { spaceMode = value; Settings.LastSpaceMode = value.ToString(); Raise(); } } }
     public bool Hidden { get => hidden; set { if (hidden != value) { hidden = value; Raise(); } } }
-    public int RangeIndex { get => rangeIndex; set { if (rangeIndex != value) { rangeIndex = value; Raise(); } } }
+    public int RangeIndex { get => rangeIndex; set { if (rangeIndex != value) { rangeIndex = value; Settings.LastRangeId = CurrentRange?.Id; Raise(); } } }
 
     /// <summary>The drawing picked with the select tool.</summary>
     public DrawItem? Selected { get => selected; set { if (selected != value) { selected = value; Raise(); } } }
@@ -236,7 +261,11 @@ public sealed class AppState
     public void NotifyChanged() => Raise();
     public void Say(string text) => Message?.Invoke(text);
     public void RequestUi(string what) => UiRequest?.Invoke(what);
-    void Raise() => Changed?.Invoke();
+    void Raise()
+    {
+        Changed?.Invoke();
+        SaveSettingsSoon(); // most changes are settings (tool, colour, toggles…); unchanged ones aren't rewritten
+    }
 
     // ---------------------------------------------------------------- replay timeline
 
@@ -428,7 +457,6 @@ public sealed class AppState
                 return;
             case "notesBar":
                 Settings.ShowNotesTimeline = !Settings.ShowNotesTimeline;
-                Settings.Save();
                 Say(Settings.ShowNotesTimeline
                     ? "Replay notes bar shown."
                     : $"Replay notes bar hidden. Bring it back with {BindingFor("notesBar")?.Display ?? "the toolbar's timeline button (right-click)"}.");

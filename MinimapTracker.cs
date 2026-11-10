@@ -266,6 +266,69 @@ public sealed class ChampionTracker
         public Point? LastWorld;
         public double LastTime = double.NaN;
         public double LastReal = double.NaN;
+        // Last position that was recorded, and a far-away reading waiting to be confirmed (see Plausible).
+        public Point? AcceptedPos;
+        public double AcceptedTime = double.NaN;
+        public Point? PendingPos;
+        public double PendingTime;
+        public int PendingCount;
+    }
+
+    /// <summary>
+    /// Fastest a champion keeps up over a few seconds, in map units per second. Base move speed is 325–390; boots,
+    /// Ghost, Zeal items and speed steroids rarely take it past ~600 for long. A bit of headroom covers ramping
+    /// speeds like Hecarim or Singed.
+    /// </summary>
+    public const double MaxRunSpeed = 700;
+
+    /// <summary>One instant hop on top of running: Flash (400) plus a typical dash (up to ~600).</summary>
+    public const double MaxBlink = 1000;
+
+    /// <summary>
+    /// Keeps only sightings a champion could physically have made since the last recorded one. A one-off jump
+    /// across the map is almost always a mixed-up icon; it's dropped unless the next sightings agree (Teleport,
+    /// a long dash, a revive), and recalls or respawns at the champion's own fountain are always allowed.
+    /// </summary>
+    public List<Sighting> Plausible(List<Sighting> seen, double time)
+    {
+        var keep = new List<Sighting>();
+        foreach (var s in seen)
+        {
+            var c = champs.FirstOrDefault(x => x.P.Id == s.ParticipantId);
+            if (c == null) continue;
+            double dt = Math.Abs(time - c.AcceptedTime);
+            if (c.AcceptedPos is not Point last || double.IsNaN(dt) || dt > 6)
+            {
+                // Nothing recent to compare with (start, seek, or a long gap). A guess about a hidden icon isn't enough to start from.
+                if (s.Hidden) continue;
+                Accept(c, s, time, keep);
+                continue;
+            }
+            double d = (s.World - last).Length;
+            if (d <= MaxRunSpeed * dt + MaxBlink) { Accept(c, s, time, keep); continue; }
+            if (s.Hidden) continue;
+
+            var fountain = c.P.Team == 200 ? RiftSession.RedFountain : RiftSession.BlueFountain;
+            if ((s.World - fountain).Length < 1800) { Accept(c, s, time, keep); continue; } // recalled or respawned
+
+            // Far jump: wait for it to repeat before believing it.
+            if (c.PendingPos is Point p && (s.World - p).Length <= MaxRunSpeed * Math.Abs(time - c.PendingTime) + 500)
+                c.PendingCount++;
+            else c.PendingCount = 1;
+            c.PendingPos = s.World;
+            c.PendingTime = time;
+            if (c.PendingCount >= 3) Accept(c, s, time, keep);
+        }
+        return keep;
+    }
+
+    static void Accept(Champ c, Sighting s, double time, List<Sighting> keep)
+    {
+        c.AcceptedPos = s.World;
+        c.AcceptedTime = time;
+        c.PendingPos = null;
+        c.PendingCount = 0;
+        keep.Add(s);
     }
 
     /// <summary>A champion seen on the minimap. Confident = the portrait clearly matched.</summary>
@@ -364,7 +427,11 @@ public sealed class ChampionTracker
     /// <summary>Forget recent positions (after a seek, nothing about "a moment ago" holds).</summary>
     public void ResetMotion()
     {
-        foreach (var c in champs) { c.LastWorld = null; c.LastTime = double.NaN; c.LastReal = double.NaN; }
+        foreach (var c in champs)
+        {
+            c.LastWorld = null; c.LastTime = double.NaN; c.LastReal = double.NaN;
+            c.AcceptedPos = null; c.AcceptedTime = double.NaN; c.PendingPos = null; c.PendingCount = 0;
+        }
     }
 
     /// <summary>
@@ -675,6 +742,44 @@ public sealed class GameTracks
             if (after is Sample y && y.T - t <= maxNear && (near == null || y.T - t < t - near.Value.T)) near = y;
             if (near is Sample n) { p = new Point(n.X, n.Y); return true; }
             return false;
+        }
+    }
+
+    public enum Fix { None, Seen, Held }
+
+    /// <summary>
+    /// Position at <paramref name="t"/> for the board. Seen: between two close sightings, lightly smoothed.
+    /// Held: the icon wasn't visible for a moment, so the champion stays where it was last seen (or walks the
+    /// straight line to where it was seen next, when that's a believable walk) instead of jumping somewhere else.
+    /// </summary>
+    public Fix Lookup(int id, double t, out Point p)
+    {
+        if (TryGet(id, t, out p))
+        {
+            // Smooth out a pixel or two of jitter between readings.
+            if (TryGet(id, t - 0.2, out var a) && TryGet(id, t + 0.2, out var b))
+                p = new Point((a.X + p.X * 2 + b.X) / 4, (a.Y + p.Y * 2 + b.Y) / 4);
+            return Fix.Seen;
+        }
+        lock (gate)
+        {
+            if (!byId.TryGetValue(id, out var list) || list.Count == 0) return Fix.None;
+            int i = Lower(list, t);
+            Sample? after = i < list.Count ? list[i] : null;
+            Sample? before = i > 0 ? list[i - 1] : null;
+            if (before is Sample x && after is Sample y && y.T - x.T <= 20)
+            {
+                double dist = Math.Sqrt((y.X - x.X) * (y.X - x.X) + (y.Y - x.Y) * (y.Y - x.Y));
+                if (dist <= ChampionTracker.MaxRunSpeed * (y.T - x.T))
+                {
+                    double k = (t - x.T) / (y.T - x.T);
+                    p = new Point(x.X + (y.X - x.X) * k, x.Y + (y.Y - x.Y) * k);
+                    return Fix.Held;
+                }
+            }
+            if (before is Sample l && t - l.T <= 8) { p = new Point(l.X, l.Y); return Fix.Held; }
+            if (after is Sample n && n.T - t <= 1.5) { p = new Point(n.X, n.Y); return Fix.Held; }
+            return Fix.None;
         }
     }
 

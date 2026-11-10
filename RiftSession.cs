@@ -4,7 +4,7 @@ using System.Windows.Threading;
 namespace RiftPen;
 
 /// <summary>Where a champion's board position comes from.</summary>
-public enum PosQuality { Tracked, Estimated }
+public enum PosQuality { Tracked, LastSeen, Estimated }
 
 /// <summary>A champion at one moment, as the Rift Board shows it.</summary>
 public readonly record struct ChampState(GameParticipant P, Point Pos, PosQuality Quality, bool Dead, double RespawnIn, int Level);
@@ -213,7 +213,7 @@ public sealed class RiftSession
         if (px == null) { await Task.Delay(300, ct); return; }
 
         var seen = tracker!.Process(px, rect.Width, rect.Height, t, IsDeadLive, out _);
-        foreach (var s in seen) Tracks!.Add(s.ParticipantId, t, s.World);
+        foreach (var s in tracker.Plausible(seen, t)) Tracks!.Add(s.ParticipantId, t, s.World);
         Interlocked.Increment(ref version);
         SetTrack(seen.Count == 0
             ? "No champion icons found on the minimap (is it showing?)."
@@ -354,8 +354,8 @@ public sealed class RiftSession
             }
         }
 
-        if (Tracks != null && !dead && Tracks.TryGet(p.Id, t, out var pos, maxGap: 4.5))
-            return new ChampState(p, pos, PosQuality.Tracked, dead, respawn, level);
+        if (Tracks != null && !dead && Tracks.Lookup(p.Id, t, out var pos) is var fix and not GameTracks.Fix.None)
+            return new ChampState(p, pos, fix == GameTracks.Fix.Seen ? PosQuality.Tracked : PosQuality.LastSeen, dead, respawn, level);
         return new ChampState(p, deathPos ?? Estimate(p.Id, t), PosQuality.Estimated, dead, respawn, level);
     }
 

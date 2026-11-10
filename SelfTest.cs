@@ -184,6 +184,17 @@ internal static class SelfTest
             S.RemoveItems(new[] { follow });
         }
 
+        // Choices from last time survive a save and reload.
+        {
+            var saved = new AppSettings { LastTool = nameof(ToolKind.Arrow), LastSpaceMode = nameof(SpaceMode.Map), BoardTrails = false, BoardLinked = false,
+                BoardZoom = 2.5, BoardCenter = new double[] { 7000, 7400 }, TimelineEnabled = false, ShowNotesTimeline = false, BoardCleanMap = true };
+            var back = System.Text.Json.JsonSerializer.Deserialize<AppSettings>(System.Text.Json.JsonSerializer.Serialize(saved))!;
+            bool kept = back.LastTool == "Arrow" && back.LastSpaceMode == "Map" && !back.BoardTrails && !back.BoardLinked && back.BoardZoom == 2.5 &&
+                        back.BoardCenter is [7000, 7400] && !back.TimelineEnabled && !back.ShowNotesTimeline && back.BoardCleanMap;
+            log.AppendLine($"Last-used choices (tool, mode, Trails, Linked, board view, notes) are kept: {P(kept)}");
+            log.AppendLine($"Self-tests don't autosave your settings: {P(!S.SettingsAutosave)}");
+        }
+
         // The replay notes bar can be hidden and brought back.
         {
             bool before = S.Settings.ShowNotesTimeline;
@@ -247,6 +258,7 @@ internal static class SelfTest
         var tracker = await ChampionTracker.CreateAsync(game);
         log.AppendLine($"Started with saved icons for {tracker.PreloadedCount}/10 champions");
         var tracks = new GameTracks("test");
+        var rawTracks = new GameTracks("test-raw"); // every sighting, as recorded before the speed filter
         int w = mm.Width, h = mm.Height;
         var allErrors = new List<double>();
         int idRight = 0, idTotal = 0;
@@ -278,7 +290,8 @@ internal static class SelfTest
                 var seen = tracker.Process(px, w, h, t, key => live.Players.FirstOrDefault(p => p.ChampionKey == key)?.IsDead == true, out var rings);
                 procMs += ps.Elapsed.TotalMilliseconds;
                 passes++;
-                foreach (var s in seen) tracks.Add(s.ParticipantId, t, s.World);
+                foreach (var s in seen) rawTracks.Add(s.ParticipantId, t, s.World);
+                foreach (var s in tracker.Plausible(seen, t)) tracks.Add(s.ParticipantId, t, s.World);
                 if (passes <= 5) earlyScores.AddRange(seen.Where(s => !s.Hidden).Select(s => s.Appearance));
                 if (t <= frame.Time + 0.3) { lastPx = px; lastRings = rings; lastSeen = seen; }
                 await Task.Delay(150);
@@ -310,6 +323,28 @@ internal static class SelfTest
                 log.AppendLine($"  {p.ChampionKey,-12} Riot ({tp.X:0},{tp.Y:0}) " + (got ? $"tracked ({pos.X:0},{pos.Y:0}) error {(pos - tp).Length:0}" : "not tracked") + idNote + (lastSeen?.FirstOrDefault(s => s.ParticipantId == p.Id && !s.Hidden) is { } ls ? $" match {ls.Appearance:0.00}" : ""));
             }
             if (errors.Count > 0) log.AppendLine($"  median error {errors.OrderBy(x => x).ElementAt(errors.Count / 2):0} units over {errors.Count} champions");
+
+            // Smoothness: play the stretch back at 30 fps the old way and the new way.
+            int oldJumps = 0, oldDrops = 0, newJumps = 0, newDrops = 0, newFrames = 0, oldFrames = 0, total = 0;
+            foreach (var p in game.Participants)
+            {
+                Point? po = null, pn = null;
+                bool oo = true, on = true;
+                for (double t = frame.Time - 14; t <= frame.Time + 1.5; t += 1 / 30.0)
+                {
+                    total++;
+                    bool okOld = rawTracks.TryGet(p.Id, t, out var a, maxGap: 4.5);
+                    bool okNew = tracks.Lookup(p.Id, t, out var b) != GameTracks.Fix.None;
+                    if (okOld) oldFrames++;
+                    if (okNew) newFrames++;
+                    if (okOld && po is Point lo && (a - lo).Length > 250) oldJumps++;
+                    if (okNew && pn is Point ln && (b - ln).Length > 250) newJumps++;
+                    if (okOld != oo) oldDrops++;
+                    if (okNew != on) newDrops++;
+                    po = okOld ? a : null; pn = okNew ? b : null; oo = okOld; on = okNew;
+                }
+            }
+            log.AppendLine($"  playback: impossible jumps old {oldJumps} → new {newJumps}; drop-outs to the estimate old {oldDrops} → new {newDrops}; frames from the minimap old {100.0 * oldFrames / total:0}% → new {100.0 * newFrames / total:0}%");
 
             if (lastPx != null)
             {

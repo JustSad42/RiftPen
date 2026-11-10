@@ -53,7 +53,7 @@ public sealed class RiftBoardWindow : Window
     readonly DispatcherTimer tick;
 
     // Board clock when not linked to the replay ("sandbox").
-    bool linked = true;
+    bool linked = AppState.I.Settings.BoardLinked;
     double sandboxTime, sandboxSpeed = 1;
     bool sandboxPlaying;
     long sandboxStamp;
@@ -101,6 +101,7 @@ public sealed class RiftBoardWindow : Window
 
         map.TimeSource = Now;
         map.CleanMap = S.Settings.BoardCleanMap;
+        map.Trails = S.Settings.BoardTrails;
         timeline.TimeSource = Now;
         timeline.Scrub += OnScrub;
         ink.Board = map;
@@ -112,7 +113,21 @@ public sealed class RiftBoardWindow : Window
 
         tick = new DispatcherTimer(DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(33) };
         tick.Tick += (_, _) => Tick();
-        Loaded += (_, _) => { tick.Start(); RefreshAll(); };
+        Loaded += (_, _) =>
+        {
+            // Same view and mode as last time.
+            if (S.Settings.BoardCenter is { Length: 2 } c) map.SetView(S.Settings.BoardZoom, new Point(c[0], c[1]));
+            if (!linked) sandboxTime = S.Replay.CurrentTime ?? 0;
+            map.ViewChanged += () =>
+            {
+                var w = map.CenterWorld;
+                S.Settings.BoardZoom = map.Zoom;
+                S.Settings.BoardCenter = new[] { Math.Round(w.X), Math.Round(w.Y) };
+                S.SaveSettingsSoon();
+            };
+            tick.Start();
+            RefreshAll();
+        };
         R.Changed += OnSessionChanged;
         S.Changed += OnAppChanged;
         Closed += (_, _) =>
@@ -122,7 +137,7 @@ public sealed class RiftBoardWindow : Window
             S.Changed -= OnAppChanged;
             ink.CommitText();
             S.Settings.BoardWindow = new[] { RestoreBounds.Left, RestoreBounds.Top, RestoreBounds.Width, RestoreBounds.Height, WindowState == WindowState.Maximized ? 1 : 0 };
-            S.Settings.Save();
+            if (S.SettingsAutosave) S.Settings.Save(); // self-tests leave your settings alone
             instance = null;
         };
         PreviewKeyDown += OnKey;
@@ -236,9 +251,9 @@ public sealed class RiftBoardWindow : Window
 
         var right = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(6, 6, 10, 6), HorizontalAlignment = HorizontalAlignment.Right };
         SetupToggle(cleanBtn, "", "Clean map", "Dim, grey map art so drawings and champions stand out", map.CleanMap);
-        cleanBtn.Click += (_, _) => { map.CleanMap = cleanBtn.IsChecked == true; S.Settings.BoardCleanMap = map.CleanMap; map.InvalidateVisual(); };
+        cleanBtn.Click += (_, _) => { map.CleanMap = cleanBtn.IsChecked == true; S.Settings.BoardCleanMap = map.CleanMap; S.SaveSettingsSoon(); map.InvalidateVisual(); };
         SetupToggle(trailBtn, "", "Trails", "Show where each champion walked in the last 6 seconds", map.Trails);
-        trailBtn.Click += (_, _) => { map.Trails = trailBtn.IsChecked == true; map.InvalidateVisual(); };
+        trailBtn.Click += (_, _) => { map.Trails = trailBtn.IsChecked == true; S.Settings.BoardTrails = map.Trails; S.SaveSettingsSoon(); map.InvalidateVisual(); };
         right.Children.Add(cleanBtn);
         right.Children.Add(trailBtn);
         right.Children.Add(MakeButton("", "Put dragged champions back where they really are", (_, _) => { map.Moved.Clear(); map.MovedAt = double.NaN; map.InvalidateVisual(); }, "Reset"));
@@ -293,7 +308,7 @@ public sealed class RiftBoardWindow : Window
         timeText.VerticalAlignment = VerticalAlignment.Center;
         timeText.FontFeatures();
         transport.Children.Add(timeText);
-        SetupToggle(linkBtn, "", "Linked", "Linked: the board and the replay move together (scrubbing here moves the replay).\nUnlinked: a sandbox — move through the game on the board without touching the replay.", true);
+        SetupToggle(linkBtn, "", "Linked", "Linked: the board and the replay move together (scrubbing here moves the replay).\nUnlinked: a sandbox — move through the game on the board without touching the replay.", linked);
         linkBtn.Click += (_, _) => SetLinked(linkBtn.IsChecked == true);
         transport.Children.Add(linkBtn);
         DockPanel.SetDock(transport, Dock.Left);
@@ -370,6 +385,8 @@ public sealed class RiftBoardWindow : Window
         }
         else if (S.Replay.Connected) S.Replay.Seek(SandboxNow); // bring the replay to where the board is
         linked = on;
+        S.Settings.BoardLinked = on;
+        S.SaveSettingsSoon();
         linkBtn.IsChecked = on;
         linkBtn.Background = on ? ButtonOn : ButtonBack;
         S.Say(on ? "Linked: the board and the replay move together." : "Sandbox: the board moves on its own; the replay stays put.");
@@ -805,7 +822,7 @@ public sealed class RiftBoardWindow : Window
             details.Children.Add(dp);
         }
         Line("Level", st.Level.ToString(CultureInfo.InvariantCulture));
-        Line("Position", st.Dead ? $"dead · back in {Math.Ceiling(st.RespawnIn)}s" : st.Quality == PosQuality.Tracked ? "from the minimap" : "estimated from the timeline");
+        Line("Position", st.Dead ? $"dead · back in {Math.Ceiling(st.RespawnIn)}s" : st.Quality switch { PosQuality.Tracked => "from the minimap", PosQuality.LastSeen => "where last seen on the minimap", _ => "estimated from the timeline" });
         if (pf != null)
         {
             Line($"At {AppState.FormatTime(Math.Floor(t / 60) * 60)} (last timeline minute)", "");

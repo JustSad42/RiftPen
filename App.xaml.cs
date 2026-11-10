@@ -79,6 +79,7 @@ public partial class App : Application
         var S = AppState.I;
         S.LoadAutosave();
         S.AutosaveEnabled = true;
+        S.SettingsAutosave = true;
 
         // Shortcuts: a low-level hook, because League blocks normal Windows hotkeys while it's focused.
         S.Hook = new InputHook(Dispatcher);

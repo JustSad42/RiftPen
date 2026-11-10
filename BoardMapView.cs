@@ -40,7 +40,7 @@ public sealed class BoardMapView : FrameworkElement, IBoardView
     public double Now => TimeSource?.Invoke() ?? 0;
 
     public bool CleanMap { get; set; }
-    public bool Trails { get; set; } = true;
+    public bool Trails { get; set; } = true; // set from settings by the window
     /// <summary>Show where the replay camera is looking (the board is at the replay's moment).</summary>
     public bool ShowCamera { get; set; }
     public int? SelectedId { get; set; }
@@ -77,11 +77,27 @@ public sealed class BoardMapView : FrameworkElement, IBoardView
         Zoom = Math.Clamp(Zoom * factor, 0.6, 10);
         pan += view - WorldToView(world);
         InvalidateVisual();
+        ViewChanged?.Invoke();
     }
 
-    public void PanBy(Vector v) { pan += v; InvalidateVisual(); }
+    public void PanBy(Vector v) { pan += v; InvalidateVisual(); ViewChanged?.Invoke(); }
 
-    public void ResetView() { Zoom = 1; pan = default; InvalidateVisual(); }
+    public void ResetView() { Zoom = 1; pan = default; InvalidateVisual(); ViewChanged?.Invoke(); }
+
+    /// <summary>Raised after zooming, panning or resetting (the window saves the view).</summary>
+    public event Action? ViewChanged;
+
+    /// <summary>The world point (X, Z) in the middle of the view.</summary>
+    public Point CenterWorld => ViewToWorld(new Point(ActualWidth / 2, ActualHeight / 2));
+
+    /// <summary>Restores a saved view: zoom level, and which world point sits in the middle.</summary>
+    public void SetView(double zoom, Point centerWorld)
+    {
+        Zoom = Math.Clamp(zoom, 0.6, 10);
+        pan = default;
+        pan += new Point(ActualWidth / 2, ActualHeight / 2) - WorldToView(centerWorld);
+        InvalidateVisual();
+    }
 
     // ---------------------------------------------------------------- images
 
@@ -252,7 +268,7 @@ public sealed class BoardMapView : FrameworkElement, IBoardView
         if (HoverId is int h && placed.FirstOrDefault(x => x.Id == h) is { Id: > 0 } hp && game.P(h) is { } hpart)
         {
             var st = states.First(x => x.P.Id == h);
-            string extra = st.Dead ? $" · dead, back in {st.RespawnIn:0}s" : st.Quality == PosQuality.Estimated ? " · position estimated from the timeline" : "";
+            string extra = st.Dead ? $" · dead, back in {st.RespawnIn:0}s" : st.Quality == PosQuality.Estimated ? " · position estimated from the timeline" : st.Quality == PosQuality.LastSeen ? " · briefly off the minimap, shown where last seen" : "";
             Label(dc, $"{hpart.ChampionName} · lvl {st.Level}{extra}", new Point(hp.View.X, hp.View.Y + hp.Radius + 4), 12, true);
         }
     }
@@ -359,7 +375,7 @@ public sealed class BoardMapView : FrameworkElement, IBoardView
     void DrawToken(DrawingContext dc, ChampState st, Point v, double r, bool moved)
     {
         var team = st.P.Team == 100 ? BlueTeam : RedTeam;
-        double op = st.Dead ? 0.6 : st.Quality == PosQuality.Estimated && !moved ? 0.72 : 1;
+        double op = st.Dead ? 0.6 : moved ? 1 : st.Quality switch { PosQuality.Estimated => 0.72, PosQuality.LastSeen => 0.88, _ => 1 };
         dc.PushOpacity(op);
         dc.DrawEllipse(new SolidColorBrush(Color.FromArgb(150, 0, 0, 0)), null, new Point(v.X + 1, v.Y + 2), r + 2, r + 2);
         var clip = new EllipseGeometry(v, r, r);
