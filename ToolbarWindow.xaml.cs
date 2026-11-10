@@ -22,7 +22,49 @@ public partial class ToolbarWindow : Window
     readonly List<(Color Color, Border Ring)> swatches = new();
     SettingsWindow? settings;
     ChampionRangesWindow? champions;
-    bool refreshing;
+    bool refreshing, collapsed, lastDrawMode;
+
+    static readonly ToolKind[] Shapes = { ToolKind.Line, ToolKind.Arrow, ToolKind.Rectangle, ToolKind.Ellipse };
+
+    static UIElement ShapeIconFor(ToolKind kind) => kind switch
+    {
+        ToolKind.Line => new TextBlock { Text = "╱", FontFamily = new FontFamily("Segoe UI Symbol"), FontSize = 16, Foreground = Brushes.White },
+        ToolKind.Arrow => new TextBlock { Text = "", FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"), FontSize = 16, Foreground = Brushes.White },
+        ToolKind.Rectangle => new System.Windows.Shapes.Rectangle { Width = 16, Height = 12, Stroke = Brushes.White, StrokeThickness = 1.6, RadiusX = 1, RadiusY = 1, Margin = new Thickness(0), Fill = Brushes.Transparent },
+        _ => new System.Windows.Shapes.Ellipse { Width = 16, Height = 16, Stroke = Brushes.White, StrokeThickness = 1.6 },
+    };
+
+    static string ShapeName(ToolKind k) => k == ToolKind.Ellipse ? "Circle" : k.ToString();
+
+    void BuildShapeList()
+    {
+        ShapeList.Children.Clear();
+        foreach (var kind in Shapes)
+        {
+            var row = new DockPanel { LastChildFill = true };
+            var key = S.BindingFor("tool:" + kind)?.Display;
+            if (key != null)
+            {
+                var k = new TextBlock { Text = key, Foreground = DimBrush, FontSize = 11, Margin = new Thickness(12, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
+                DockPanel.SetDock(k, Dock.Right);
+                row.Children.Add(k);
+            }
+            var icon = new Border { Width = 24, Child = ShapeIconFor(kind), Margin = new Thickness(0, 0, 8, 0) };
+            row.Children.Add(icon);
+            row.Children.Add(new TextBlock { Text = ShapeName(kind), FontFamily = new FontFamily("Segoe UI"), FontSize = 13, VerticalAlignment = VerticalAlignment.Center });
+            var b = MenuButton(row);
+            b.HorizontalContentAlignment = HorizontalAlignment.Stretch;
+            b.Click += (_, _) => { S.SelectTool(kind); ShapePopup.IsOpen = false; };
+            ShapeList.Children.Add(b);
+        }
+    }
+
+    void ShapeBtn_Click(object sender, RoutedEventArgs e)
+    {
+        S.SelectTool(AppState.IsShape(S.Tool) ? S.Tool : S.LastShape);
+        ShapePopup.IsOpen = true;
+        Refresh();
+    }
 
     public ToolbarWindow(OverlayWindow overlay)
     {
@@ -39,7 +81,10 @@ public partial class ToolbarWindow : Window
         }
         BuildSwatches();
         BuildMarkerList();
+        BuildShapeList();
         BuildRangeList();
+        collapsed = S.Settings.AutoCollapseToolbar ? !S.DrawMode : S.Settings.ToolbarCollapsed;
+        lastDrawMode = S.DrawMode;
         S.Settings.RangePresets.CollectionChanged += (_, _) => BuildRangeList();
 
         S.Changed += Refresh;
@@ -112,6 +157,26 @@ public partial class ToolbarWindow : Window
     public void BuildRangeList()
     {
         RangeList.Children.Clear();
+
+        // Follow switch: new circles ride along with the camera-locked champion.
+        var followRow = new StackPanel { Orientation = Orientation.Horizontal };
+        followRow.Children.Add(new TextBlock
+        {
+            Text = S.Settings.RangeFollow ? "" : "", // checked / unchecked box
+            FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"), FontSize = 14, Margin = new Thickness(0, 0, 8, 0),
+            VerticalAlignment = VerticalAlignment.Center, Foreground = S.Settings.RangeFollow ? LinkBrush : Brushes.White,
+        });
+        followRow.Children.Add(new TextBlock
+        {
+            Text = "Follow the camera-locked champion" + (S.BindingFor("rangeFollow") is { } fk ? $"   [{fk.Display}]" : ""),
+            FontFamily = new FontFamily("Segoe UI"), FontSize = 13, VerticalAlignment = VerticalAlignment.Center,
+        });
+        var follow = MenuButton(followRow);
+        follow.ToolTip = "On: lock the replay camera onto a champion, then click anywhere to attach the circle to them.\nOff: circles stay where you click.";
+        follow.Click += (_, _) => { S.RunAction("rangeFollow", true); BuildRangeList(); };
+        RangeList.Children.Add(follow);
+        RangeList.Children.Add(MenuSeparator());
+
         var presets = S.Settings.RangePresets;
         for (int i = 0; i < presets.Count; i++)
         {
@@ -161,6 +226,10 @@ public partial class ToolbarWindow : Window
         load.Click += (_, _) => { BoardsPopup.IsOpen = false; LoadBoard(null); };
         BoardsList.Children.Add(save);
         BoardsList.Children.Add(load);
+
+        var notesItem = MenuButton(MenuText("Notes for this replay…"));
+        notesItem.Click += (_, _) => { BoardsPopup.IsOpen = false; S.RequestUi("notes"); };
+        BoardsList.Children.Add(notesItem);
 
         var recent = Persistence.RecentBoards();
         if (recent.Count > 0)
@@ -251,7 +320,7 @@ public partial class ToolbarWindow : Window
     {
         S.SelectTool(kind);
         if (kind == ToolKind.Marker) MarkerPopup.IsOpen = true;
-        if (kind == ToolKind.Range) RangePopup.IsOpen = true;
+        if (kind == ToolKind.Range) { BuildRangeList(); RangePopup.IsOpen = true; }
         Refresh();
     }
 
@@ -261,6 +330,7 @@ public partial class ToolbarWindow : Window
         [ToolKind.Pen] = "Pen",
         [ToolKind.Highlighter] = "Highlighter",
         [ToolKind.Laser] = "Laser pointer: fades after a moment",
+        [ToolKind.Ping] = "Ping: click for a ripple, like a League ping",
         [ToolKind.Eraser] = "Eraser: removes whole strokes",
         [ToolKind.Line] = "Line (Shift snaps to 45°)",
         [ToolKind.Arrow] = "Arrow (Shift snaps to 45°)",
@@ -283,21 +353,32 @@ public partial class ToolbarWindow : Window
         RedoBtn.ToolTip = WithKey("Redo", "redo");
         ClearBtn.ToolTip = WithKey("Clear what's on screen", "clear");
         HideBtn.ToolTip = WithKey("Hide / show drawings", "hide");
+        SpotBtn.ToolTip = WithKey("Spotlight: dim everything except around the cursor", "spotlight");
         ShotBtn.ToolTip = WithKey("Screenshot with drawings (saved to Pictures\\RiftPen)", "screenshot");
         BoardsBtn.ToolTip = "Boards: save and load drawing layouts";
         ColorBtn.ToolTip = $"Color and size   [{S.BindingFor("sizeDown")?.Display ?? "–"} / {S.BindingFor("sizeUp")?.Display ?? "–"} changes size]";
         TimelineBtn.ToolTip = WithKey(S.Settings.TimelineEnabled
             ? $"Timeline notes ON: in a replay, new drawings appear at this moment and stay {(S.Settings.NoteDurationSec > 0 ? $"{S.Settings.NoteDurationSec:0} seconds" : "until the end")}"
             : "Timeline notes OFF: new drawings stay up regardless of replay time", "timeline");
-        CollapseBtn.ToolTip = S.Settings.ToolbarCollapsed ? "Expand toolbar" : "Collapse toolbar";
+        var shapeKey = S.BindingFor("tool:" + S.LastShape)?.Display;
+        ShapeBtn.ToolTip = $"Shapes: line, arrow, rectangle, circle (last used: {ShapeName(S.LastShape)}{(shapeKey != null ? $" [{shapeKey}]" : "")}). Shift snaps; on the map, circles grow from the center.";
+        CollapseBtn.ToolTip = collapsed ? "Expand toolbar" : "Collapse toolbar";
     }
 
     void Refresh()
     {
         refreshing = true;
+        if (S.DrawMode != lastDrawMode)
+        {
+            lastDrawMode = S.DrawMode;
+            if (S.Settings.AutoCollapseToolbar && collapsed == S.DrawMode) { collapsed = !S.DrawMode; ApplyCollapsed(); }
+        }
         DrawToggle.IsChecked = S.DrawMode;
         DrawLabel.Text = S.DrawMode ? "✎ Drawing" : "✎ Draw";
         foreach (var (kind, tb) in tools) tb.IsChecked = S.DrawMode && S.Tool == kind;
+        ShapeBtn.IsChecked = S.DrawMode && AppState.IsShape(S.Tool);
+        var shownShape = AppState.IsShape(S.Tool) ? S.Tool : S.LastShape;
+        if (ShapeIcon.Tag is not ToolKind k || k != shownShape) { ShapeIcon.Content = ShapeIconFor(shownShape); ShapeIcon.Tag = shownShape; }
         foreach (var (c, ring) in swatches) ring.BorderBrush = c == S.Color ? Brushes.White : Brushes.Transparent;
         if (Math.Abs(SizeSlider.Value - S.Thickness) > 0.01) SizeSlider.Value = S.Thickness;
         SizeLabel.Text = $"Size  {S.Thickness:0}";
@@ -309,6 +390,7 @@ public partial class ToolbarWindow : Window
         SpaceLabel.Text = S.SpaceMode switch { SpaceMode.Auto => "AUTO", SpaceMode.Map => "MAP", _ => "SCREEN" };
         TimelineBtn.IsChecked = S.Settings.TimelineEnabled;
         HideBtn.IsChecked = S.Hidden;
+        SpotBtn.IsChecked = S.Spotlight;
         MarkerPreview.Kind = S.Marker;
         try { RangeDot.Fill = new SolidColorBrush((Color)ColorConverter.ConvertFromString(S.CurrentRange?.Color ?? "#FFFFFF")); } catch { }
         UpdateTooltips();
@@ -332,10 +414,9 @@ public partial class ToolbarWindow : Window
 
     void ApplyCollapsed()
     {
-        bool c = S.Settings.ToolbarCollapsed;
-        Expanded.Visibility = c ? Visibility.Collapsed : Visibility.Visible;
-        CollapseBtn.Content = c ? "" : "";
-        UpdateTooltips();
+        Expanded.Visibility = collapsed ? Visibility.Collapsed : Visibility.Visible;
+        CollapseBtn.Content = collapsed ? "" : "";
+        if (IsInitialized) UpdateTooltips();
     }
 
     void PlaceInitially()
@@ -384,6 +465,19 @@ public partial class ToolbarWindow : Window
         champions.Activate();
     }
 
+    NotesWindow? notes;
+
+    public void OpenNotes()
+    {
+        if (notes is not { IsLoaded: true })
+        {
+            notes = new NotesWindow();
+            notes.Closed += (_, _) => notes = null;
+            notes.Show();
+        }
+        notes.Activate();
+    }
+
     public void ToggleVisible()
     {
         if (IsVisible) Hide();
@@ -415,7 +509,15 @@ public partial class ToolbarWindow : Window
 
     void Collapse_Click(object sender, RoutedEventArgs e)
     {
-        S.Settings.ToolbarCollapsed = !S.Settings.ToolbarCollapsed;
+        collapsed = !collapsed;
+        if (!S.Settings.AutoCollapseToolbar) S.Settings.ToolbarCollapsed = collapsed;
+        ApplyCollapsed();
+    }
+
+    /// <summary>Re-reads the auto-collapse setting (after Settings changes it).</summary>
+    public void ApplyCollapseSetting()
+    {
+        collapsed = S.Settings.AutoCollapseToolbar ? !S.DrawMode : S.Settings.ToolbarCollapsed;
         ApplyCollapsed();
     }
 
@@ -425,6 +527,7 @@ public partial class ToolbarWindow : Window
     void Redo_Click(object sender, RoutedEventArgs e) => S.Redo();
     void Clear_Click(object sender, RoutedEventArgs e) => S.Clear();
     void Hide_Click(object sender, RoutedEventArgs e) => S.Hidden = HideBtn.IsChecked == true;
+    void Spot_Click(object sender, RoutedEventArgs e) => S.Spotlight = SpotBtn.IsChecked == true;
     void Shot_Click(object sender, RoutedEventArgs e) => S.RequestUi("screenshot");
     void Settings_Click(object sender, RoutedEventArgs e) => OpenSettings(0);
     void Quit_Click(object sender, RoutedEventArgs e) => Application.Current.Shutdown();

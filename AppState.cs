@@ -80,10 +80,65 @@ public sealed class AppState
         set
         {
             if (tool == value) return;
+            // Each tool keeps its own colour and size (the laser stays red, the highlighter yellow…).
+            if (RemembersStyle(tool)) Settings.ToolStyles[tool.ToString()] = new ToolStyle { Color = color.ToString(), Thickness = thickness };
             tool = value;
+            if (RemembersStyle(value) &&
+                (Settings.ToolStyles.TryGetValue(value.ToString(), out var style) || DefaultStyles.TryGetValue(value, out style)))
+            {
+                try { color = (Color)ColorConverter.ConvertFromString(style.Color); } catch { }
+                thickness = Math.Clamp(style.Thickness, 1, 30);
+                Settings.Color = color.ToString();
+                Settings.Thickness = thickness;
+            }
+            if (IsShape(value)) Settings.LastShape = value.ToString();
             if (value != ToolKind.Select) selected = null;
             Raise();
         }
+    }
+
+    static readonly Dictionary<ToolKind, ToolStyle> DefaultStyles = new()
+    {
+        [ToolKind.Highlighter] = new ToolStyle { Color = "#FFFFD60A", Thickness = 6 },
+        [ToolKind.Laser] = new ToolStyle { Color = "#FFFF3B30", Thickness = 5 },
+    };
+
+    // Select recolours what you pick; range circles use their preset's colour.
+    static bool RemembersStyle(ToolKind k) => k is not (ToolKind.Select or ToolKind.Range);
+
+    public static bool IsShape(ToolKind k) => k is ToolKind.Line or ToolKind.Arrow or ToolKind.Rectangle or ToolKind.Ellipse;
+
+    public ToolKind LastShape => Enum.TryParse<ToolKind>(Settings.LastShape, out var k) && IsShape(k) ? k : ToolKind.Arrow;
+
+    // ---------------------------------------------------------------- tool wheel + cheat sheet
+
+    bool spotlight;
+
+    /// <summary>Dims the screen except around the cursor (works while drawing or not).</summary>
+    public bool Spotlight { get => spotlight; set { if (spotlight != value) { spotlight = value; Raise(); } } }
+
+    public bool WheelOpen { get; private set; }
+    /// <summary>True when the wheel opens, false when it closes (the canvas applies the choice).</summary>
+    public event Action<bool>? WheelChanged;
+    public bool CheatSheet { get; private set; }
+
+    DispatcherTimer? holdTimer;
+    bool drawKeyDown;
+
+    void OpenWheel()
+    {
+        if (WheelOpen) return;
+        WheelOpen = true;
+        WheelChanged?.Invoke(true);
+        Raise();
+    }
+
+    void CloseWheel()
+    {
+        if (!WheelOpen) return;
+        WheelOpen = false;
+        WheelChanged?.Invoke(false);
+        Raise();
     }
 
     public MarkerKind Marker { get => marker; set { if (marker != value) { marker = value; Raise(); } } }
@@ -107,6 +162,7 @@ public sealed class AppState
 
             if (value)
             {
+                Replay.Boost();
                 // Freeze the replay while drawing so the note lands on the right moment.
                 if (Settings.PauseWhileDrawing && Replay.Playback is { Paused: false })
                 {
@@ -267,6 +323,8 @@ public sealed class AppState
         if (rect != null)
         {
             Settings.MinimapRect = rect;
+            // Remember the HUD layout, so only a real HUD change makes auto-detection replace a hand-set area.
+            Settings.MinimapCfgSignature = MinimapDetect.HudSignature(Settings.GameCfgPath);
             Settings.Save();
             Say("Minimap area saved.");
         }
@@ -294,6 +352,40 @@ public sealed class AppState
             else if (!down && holdingDraw) DrawMode = false;
             return;
         }
+        if (id == "toggleDraw" && Settings.WheelOnHold)
+        {
+            // Tap = draw mode on/off. Hold = tool wheel, pick on release.
+            if (down)
+            {
+                drawKeyDown = true;
+                if (holdTimer == null)
+                {
+                    holdTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(220) };
+                    holdTimer.Tick += (_, _) => { holdTimer!.Stop(); if (drawKeyDown) OpenWheel(); };
+                }
+                holdTimer.Stop();
+                holdTimer.Start();
+            }
+            else
+            {
+                drawKeyDown = false;
+                holdTimer?.Stop();
+                if (WheelOpen) CloseWheel();
+                else DrawMode = !DrawMode;
+            }
+            return;
+        }
+        if (id == "wheel")
+        {
+            if (down) OpenWheel(); else CloseWheel();
+            return;
+        }
+        if (id == "cheatsheet")
+        {
+            CheatSheet = down;
+            Raise();
+            return;
+        }
         if (!down) return;
 
         var pb = Replay.Playback;
@@ -312,8 +404,20 @@ public sealed class AppState
             case "grid": ToggleGrid(); return;
             case "sizeUp": Thickness += 1; return;
             case "sizeDown": Thickness -= 1; return;
+            case "spotlight":
+                Spotlight = !Spotlight;
+                return;
+            case "rangeFollow":
+                Settings.RangeFollow = !Settings.RangeFollow;
+                Say(Settings.RangeFollow
+                    ? "Range circles now follow the champion the camera is locked onto."
+                    : "Range circles now stay where you place them.");
+                Raise();
+                return;
             case "screenshot":
             case "toggleToolbar":
+            case "notes":
+            case "ping":
                 UiRequest?.Invoke(id);
                 return;
             case "timeline":
@@ -471,17 +575,51 @@ public sealed class AppState
 
     void AfterItemsChanged()
     {
+        itemsVersion++;
         if (selected != null && !Items.Contains(selected)) selected = null;
         ItemsChanged?.Invoke();
         ScheduleSave();
     }
+
+    // ---------------------------------------------------------------- fast lookup of what can show now
+
+    int itemsVersion, contextVersion = -1;
+    string? contextKey;
+    List<DrawItem> contextItems = new();
+    bool contextHasTimed;
+
+    /// <summary>Call after changing <see cref="Items"/> directly (e.g. the eraser mid-drag).</summary>
+    public void Touch() => itemsVersion++;
+
+    /// <summary>Drawings that belong to the current context: always-on ones plus this replay's notes.</summary>
+    public IReadOnlyList<DrawItem> ContextItems
+    {
+        get
+        {
+            var key = ReplayKey;
+            if (contextVersion != itemsVersion || contextKey != key)
+            {
+                contextItems = Items.Where(i => i.ReplayKey == null || i.ReplayKey == key).ToList();
+                contextHasTimed = contextItems.Any(i => i.ReplayKey != null);
+                contextVersion = itemsVersion;
+                contextKey = key;
+            }
+            return contextItems;
+        }
+    }
+
+    /// <summary>The open replay has notes that fade in and out with its clock.</summary>
+    public bool ContextHasTimedNotes { get { _ = ContextItems; return contextHasTimed; } }
+
+    /// <summary>Saves soon without an undo step (e.g. renaming a note).</summary>
+    public void SaveSoon() => ScheduleSave();
 
     // ---------------------------------------------------------------- autosave
 
     public void LoadAutosave()
     {
         if (!Settings.RestoreDrawings || !File.Exists(Persistence.AutosavePath)) return;
-        try { Items.AddRange(Persistence.Load(Persistence.AutosavePath)); }
+        try { Items.AddRange(Persistence.Load(Persistence.AutosavePath)); itemsVersion++; }
         catch (Exception ex) { AppSettings.LogError(ex); }
     }
 

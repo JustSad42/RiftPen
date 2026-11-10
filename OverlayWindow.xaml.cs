@@ -3,6 +3,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Threading;
 
 namespace RiftPen;
 
@@ -20,7 +21,6 @@ public partial class OverlayWindow : Window
     IntPtr league;
     Native.RECT leaguePx;
     bool leagueFound;
-    int frame;
     bool lastDrawMode;
 
     public OverlayWindow()
@@ -44,7 +44,8 @@ public partial class OverlayWindow : Window
         DpiChanged += (_, _) => Dispatcher.BeginInvoke(() => MoveToMonitor(monitorIndex));
 
         S.Changed += OnStateChanged;
-        CompositionTarget.Rendering += OnFrame;
+        Surface.CursorProvider = CursorDip;
+        StartLoop();
         ContentRendered += (_, _) =>
         {
             if (!AllowsTransparency) Native.SetLayeredWindowAttributes(hwnd, 0, 255, Native.LWA_ALPHA);
@@ -193,14 +194,65 @@ public partial class OverlayWindow : Window
     void OnFrame(object? sender, EventArgs e)
     {
         if (hwnd == IntPtr.Zero) return;
-        frame++;
-        if (frame % 15 == 0)
+        Tick();
+    }
+
+    // ---- adaptive update loop ----
+    // Hot: every display frame (camera moving, laser fading, wheel open…).
+    // Warm: 30×/s while a replay is open but nothing moves. Cold: 4×/s with no replay.
+    // This keeps RiftPen near 0% CPU when idle instead of redrawing 165 times a second.
+
+    DispatcherTimer? slowTimer;
+    bool hot;
+    long lastBusyTicks, lastLeagueTicks, lastTopmostTicks;
+
+    void StartLoop()
+    {
+        slowTimer = new DispatcherTimer(DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(250) };
+        slowTimer.Tick += (_, _) => { if (!hot) Tick(); };
+        slowTimer.Start();
+        // Respond at once when something starts (drawing, wheel, laser) instead of waiting for the next slow tick.
+        S.Changed += () =>
         {
+            if (!Surface.Busy) return;
+            lastBusyTicks = System.Diagnostics.Stopwatch.GetTimestamp();
+            SetHot(true);
+        };
+    }
+
+    void SetHot(bool on)
+    {
+        if (on == hot) return;
+        hot = on;
+        if (on) CompositionTarget.Rendering += OnFrame;
+        else CompositionTarget.Rendering -= OnFrame;
+    }
+
+    /// <summary>Whether the overlay is redrawing every frame right now (for the self-check / settings readout).</summary>
+    public bool IsHot => hot;
+
+    void Tick()
+    {
+        long now = System.Diagnostics.Stopwatch.GetTimestamp();
+        double Ms(long since) => (now - since) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+
+        if (Ms(lastLeagueTicks) >= 250)
+        {
+            lastLeagueTicks = now;
             RefreshLeague();
             scale = VisualTreeHelper.GetDpi(this).DpiScaleX;
+            MaybeAutoDetectMinimap(now);
         }
-        if (frame % 180 == 0)
+        if (Ms(lastTopmostTicks) >= 3000)
+        {
+            lastTopmostTicks = now;
             Native.SetWindowPos(hwnd, Native.HWND_TOPMOST, 0, 0, 0, 0, Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOACTIVATE);
+        }
+        if (slowTimer != null)
+        {
+            var want = TimeSpan.FromMilliseconds(S.Replay.Connected ? 33 : 250);
+            if (slowTimer.Interval != want) slowTimer.Interval = want;
+        }
 
         var cam = S.Replay.Predict(S.Settings.PredictionMs);
         bool visible = cam != null && leagueFound &&
@@ -211,7 +263,59 @@ public partial class OverlayWindow : Window
             ? new Rect((leaguePx.Left - monitor.Left) / scale, (leaguePx.Top - monitor.Top) / scale, leaguePx.Width / scale, leaguePx.Height / scale)
             : new Rect(0, 0, ActualWidth, ActualHeight);
 
-        Surface.Frame(cam, viewport, visible);
+        bool changed = Surface.Frame(cam, viewport, visible);
+        if (changed || Surface.Busy || (S.Replay.Active && visible)) lastBusyTicks = now;
+        SetHot(Ms(lastBusyTicks) < 1500);
+        Timeline?.Update(leagueFound, leaguePx, visible || (leagueFound && ForegroundIsLeagueOrUs()));
+    }
+
+    // ---- automatic minimap detection ----
+
+    long replaySinceTicks;
+    bool autoDetectTried;
+
+    void MaybeAutoDetectMinimap(long now)
+    {
+        if (!S.Replay.Connected) { replaySinceTicks = 0; autoDetectTried = false; return; }
+        if (replaySinceTicks == 0) replaySinceTicks = now;
+        if (autoDetectTried || !S.Settings.AutoDetectMinimap || !leagueFound || S.DrawMode || MinimapDetect.Running) return;
+        if ((now - replaySinceTicks) / (double)System.Diagnostics.Stopwatch.Frequency < 3) return; // let the replay load
+        autoDetectTried = true;
+        var sig = MinimapDetect.HudSignature(S.Settings.GameCfgPath);
+        bool needed = S.Settings.MinimapRect == null ||
+                      (sig != null && S.Settings.MinimapCfgSignature != null && sig != S.Settings.MinimapCfgSignature);
+        if (needed) DetectMinimap(automatic: true);
+    }
+
+    /// <summary>Finds the minimap by hiding it for a moment through the Replay API and seeing what changed.</summary>
+    public async void DetectMinimap(bool automatic)
+    {
+        if (!leagueFound) { S.Say("Couldn't find the League window."); return; }
+        S.Say(automatic ? "Finding your minimap (one moment)…" : "Looking for the minimap…");
+        bool spotlightWas = S.Spotlight;
+        var (rect, message) = await MinimapDetect.DetectAsync(leaguePx, hide =>
+        {
+            S.Spotlight = !hide && spotlightWas; // the spotlight follows the mouse and would confuse the comparison
+            Surface.InvalidateVisual();
+        });
+        if (rect != null)
+        {
+            S.Settings.MinimapRect = rect;
+            S.Settings.MinimapCfgSignature = MinimapDetect.HudSignature(S.Settings.GameCfgPath);
+            S.Settings.Save();
+            S.NotifyChanged();
+        }
+        S.Say(message);
+    }
+
+    /// <summary>The notes timeline strip, positioned over the League window.</summary>
+    public TimelineWindow? Timeline { get; set; }
+
+    /// <summary>Mouse position in overlay coordinates (works while click-through).</summary>
+    public Point CursorDip()
+    {
+        Native.GetCursorPos(out var p);
+        return new Point((p.X - monitor.Left) / scale, (p.Y - monitor.Top) / scale);
     }
 
     void OnStateChanged()

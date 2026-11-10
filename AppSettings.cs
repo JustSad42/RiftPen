@@ -26,6 +26,12 @@ public sealed class RangePreset
     public string Color { get; set; } = "#FFFFFF";
 }
 
+public sealed class ToolStyle
+{
+    public string Color { get; set; } = "#FFFF3B30";
+    public double Thickness { get; set; } = 4;
+}
+
 public sealed class AppSettings
 {
     public CalibrationSettings Calibration { get; set; } = new();
@@ -62,6 +68,32 @@ public sealed class AppSettings
     public bool MirrorToMinimap { get; set; } = true;
     public bool MinimapInput { get; set; } = true;
     public double MinimapWorldSize { get; set; } = 14870;
+
+    // Ease of use
+    /// <summary>Holding the draw-mode key opens the tool wheel; tapping still toggles drawing.</summary>
+    public bool WheelOnHold { get; set; } = true;
+    public bool AutoCollapseToolbar { get; set; } = true;
+    public bool SmoothStrokes { get; set; } = true;
+    public bool PenPressure { get; set; } = true;
+    /// <summary>Last colour and size used with each tool, so e.g. the laser stays red.</summary>
+    public Dictionary<string, ToolStyle> ToolStyles { get; set; } = new();
+    public string LastShape { get; set; } = nameof(ToolKind.Arrow);
+
+    /// <summary>New range circles follow the champion the replay camera is locked onto.</summary>
+    public bool RangeFollow { get; set; }
+
+    // Spotlight: dims everything except a circle around the cursor.
+    public double SpotlightRadius { get; set; } = 220;
+    public double SpotlightDim { get; set; } = 0.6;
+
+    /// <summary>League's HUD settings when the minimap was last found; a change triggers a fresh detection.</summary>
+    public string? MinimapCfgSignature { get; set; }
+    public bool AutoDetectMinimap { get; set; } = true;
+    public bool StartMenuShortcutDone { get; set; }
+
+    // Notes timeline strip: centre x and top y as fractions of the League window.
+    public bool ShowNotesTimeline { get; set; } = true;
+    public double[] TimelineStripPos { get; set; } = { 0.5, 0.09 };
 
     // Screenshots
     public string ScreenshotFolder { get; set; } =

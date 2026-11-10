@@ -58,13 +58,59 @@ public sealed class DrawCanvas : FrameworkElement
     string? status;
     DateTime statusUntil;
 
+    // Fixed-on-screen drawings don't move with the camera, so they're drawn once into this cache.
+    readonly DrawingGroup staticLayer = new();
+    bool staticDirty = true;
+    readonly Dictionary<uint, SolidColorBrush> brushCache = new();
+    readonly Dictionary<(uint, double), Pen> penCache = new();
+
+    // Screen positions of the stroke being drawn (for simplifying it when finished).
+    readonly List<Point> currentScreen = new();
+
+    // Faint preview of a range circle / marker under the cursor.
+    Point? hover;
+
+    // The replay camera is locked onto a champion right now.
+    bool followLocked;
+
+    // Tool wheel
+    static readonly ToolKind[] WheelTools =
+    {
+        ToolKind.Select, ToolKind.Pen, ToolKind.Highlighter, ToolKind.Laser, ToolKind.Ping, ToolKind.Eraser, ToolKind.Line,
+        ToolKind.Arrow, ToolKind.Rectangle, ToolKind.Ellipse, ToolKind.Text, ToolKind.Marker, ToolKind.Range,
+    };
+    const double WheelR1 = 46, WheelR2 = 100, WheelR3 = 108, WheelR4 = 190;
+    Point wheelCenter;
+    ToolKind? wheelTool;
+    int? wheelColor;
+
+    /// <summary>Mouse position in this element's coordinates, even while the overlay is click-through.</summary>
+    public Func<Point>? CursorProvider { get; set; }
+
     public DrawCanvas()
     {
         Focusable = true;
         FocusVisualStyle = null;
-        S.Changed += () => { force = true; UpdateCursor(); InvalidateVisual(); };
-        S.ItemsChanged += InvalidateVisual;
+        S.Changed += () => { force = true; staticDirty = true; UpdateCursor(); InvalidateVisual(); };
+        S.ItemsChanged += () => { staticDirty = true; InvalidateVisual(); };
         S.Message += Flash;
+        S.WheelChanged += OnWheelChanged;
+    }
+
+    /// <summary>Something is animating or in progress, so the overlay should keep redrawing every frame.</summary>
+    public bool Busy => lasers.Count > 0 || pings.Count > 0 || status != null || current != null || dragging || erasing || S.WheelOpen || S.Spotlight;
+
+    // Ping ripples: transient, never saved.
+    readonly List<(Point Pos, Space Space, Color Color, DateTime At)> pings = new();
+    const double PingSeconds = 1.1;
+
+    /// <summary>A ripple at the mouse position (on the map when possible).</summary>
+    public void PingAtCursor()
+    {
+        var p = CursorProvider?.Invoke() ?? new Point(RenderSize.Width / 2, RenderSize.Height / 2);
+        if (S.SpaceMode != SpaceMode.Screen && CanUseMap && Projector.TryUnproject(p, out var w)) pings.Add((w, Space.World, S.Color, DateTime.Now));
+        else pings.Add((p, Space.Screen, S.Color, DateTime.Now));
+        InvalidateVisual();
     }
 
     double Ppd => VisualTreeHelper.GetDpi(this).PixelsPerDip;
@@ -72,9 +118,10 @@ public sealed class DrawCanvas : FrameworkElement
     /// <summary>True when map drawings can be shown and placed right now.</summary>
     public bool CanUseMap => worldVisible && Projector.Valid;
 
-    /// <summary>Called every frame by the overlay with the latest camera and League viewport.</summary>
-    public void Frame(CameraState? cam, Rect viewport, bool visible)
+    /// <summary>Called by the overlay with the latest camera and League viewport. Returns true if anything changed.</summary>
+    public bool Frame(CameraState? cam, Rect viewport, bool visible)
     {
+        if (S.WheelOpen && CursorProvider != null) UpdateWheelHover(CursorProvider());
         bool camChanged = !CameraState.SameView(cam, lastCam) || viewport != lastViewport;
         if (camChanged || force)
         {
@@ -90,16 +137,24 @@ public sealed class DrawCanvas : FrameworkElement
         var t = S.ReplayTime;
         var key = S.ReplayKey;
         bool timeChanged = t != lastTime || key != lastKey;
+        if (key != lastKey) staticDirty = true;
         lastTime = t;
         lastKey = key;
-        bool timedActive = timeChanged && key != null && S.Items.Any(i => i.ReplayKey == key);
+        bool timedActive = timeChanged && key != null && S.ContextHasTimedNotes;
 
-        bool lasersActive = lasers.Count > 0;
-        if (lasersActive)
+        bool lasersActive = lasers.Count > 0 || pings.Count > 0 || S.Spotlight;
+        if (lasers.Count > 0)
         {
             double life = S.Settings.LaserSeconds + 0.6;
             lasers.RemoveAll(l => (DateTime.Now - l.Released).TotalSeconds > life);
         }
+        if (pings.Count > 0) pings.RemoveAll(p => (DateTime.Now - p.At).TotalSeconds > PingSeconds);
+
+        // Follow circles ride along with the champion the camera is locked onto.
+        followLocked = cam?.Attached == true && Projector.Valid;
+        if (followLocked && Projector.TryLookAt(out var lookAt))
+            foreach (var it in S.ContextItems)
+                if (it.Follow && it.Points.Count > 0 && it.Points[0] != lookAt) it.Points[0] = lookAt;
 
         bool statusExpired = status != null && DateTime.Now > statusUntil;
         if (statusExpired) status = null;
@@ -108,11 +163,12 @@ public sealed class DrawCanvas : FrameworkElement
                       (camChanged && visible && HasWorldContent());
         force = false;
         if (redraw) InvalidateVisual();
+        return redraw;
     }
 
     bool HasWorldContent() =>
-        S.Settings.ShowGrid || current?.Space == Space.World || S.Items.Any(i => i.Space == Space.World) ||
-        lasers.Any(l => l.Item.Space == Space.World);
+        S.Settings.ShowGrid || current?.Space == Space.World || S.ContextItems.Any(i => i.Space == Space.World) ||
+        lasers.Any(l => l.Item.Space == Space.World) || (hover != null && S.Tool == ToolKind.Range);
 
     public void UpdateCursor()
     {
@@ -190,6 +246,9 @@ public sealed class DrawCanvas : FrameworkElement
         if (S.Hidden) S.Hidden = false;
         startScreen = lastScreen = p;
         viaMinimap = OnMinimap(p);
+        hover = null;
+        currentScreen.Clear();
+        currentScreen.Add(p);
 
         if (S.Tool == ToolKind.Select) { BeginSelect(p); return; }
 
@@ -202,18 +261,37 @@ public sealed class DrawCanvas : FrameworkElement
             return;
         }
 
+        if (S.Tool == ToolKind.Ping)
+        {
+            var pingSpace = ResolveSpace();
+            if (ToStore(p, pingSpace, out var at)) pings.Add((at, pingSpace, S.Color, DateTime.Now));
+            InvalidateVisual();
+            return;
+        }
+
         if (S.Tool == ToolKind.Range)
         {
             var preset = S.CurrentRange;
             if (preset == null) { Flash("No range circles yet. Add some in Settings → Range circles."); return; }
-            if (!CanUseMap || !ToWorld(p, out var centre))
+            if (!CanUseMap) { Flash("Range circles go on the map: open a replay with the Replay API on."); return; }
+            bool follow = S.Settings.RangeFollow;
+            Point centre;
+            if (follow)
             {
-                Flash("Range circles go on the map: open a replay with the Replay API on.");
+                if (!followLocked || !Projector.TryLookAt(out centre))
+                {
+                    Flash("Lock the camera onto a champion first (select them and lock the camera), or turn off Follow in the range menu.");
+                    return;
+                }
+            }
+            else if (!ToWorld(p, out centre))
+            {
+                Flash("Can't place that there: it's above the map's horizon.");
                 return;
             }
             current = new DrawItem
             {
-                Kind = ToolKind.Range, Space = Space.World, Color = ParseColor(preset.Color), Thickness = 3,
+                Kind = ToolKind.Range, Space = Space.World, Color = ParseColor(preset.Color), Thickness = 3, Follow = follow,
                 Radius = preset.Radius, Text = $"{preset.Name} {preset.Radius:0}", Points = { centre },
             };
             CaptureMouse();
@@ -241,6 +319,8 @@ public sealed class DrawCanvas : FrameworkElement
 
         // Map rectangles get their 4 ground corners on the first mouse move.
         if (!(S.Tool == ToolKind.Rectangle && space == Space.World)) item.Points.Add(stored);
+        if (IsFreehand(item.Kind) && S.Settings.PenPressure && PressureOf(e) is float pressure)
+            item.Pressure = new List<float> { pressure };
         current = item;
         CaptureMouse();
         InvalidateVisual();
@@ -253,8 +333,29 @@ public sealed class DrawCanvas : FrameworkElement
         if (picking) { pickEnd = p; InvalidateVisual(); return; }
         if (erasing) { EraseAt(p); return; }
         if (dragging) { DragSelected(p); return; }
-        if (current == null || e.LeftButton != MouseButtonState.Pressed) return;
-        UpdateCurrent(p);
+        if (current == null || e.LeftButton != MouseButtonState.Pressed)
+        {
+            if (S.Tool is ToolKind.Range or ToolKind.Marker) { hover = p; InvalidateVisual(); }
+            return;
+        }
+        UpdateCurrent(p, PressureOf(e));
+    }
+
+    protected override void OnMouseLeave(MouseEventArgs e)
+    {
+        if (hover != null) { hover = null; InvalidateVisual(); }
+        base.OnMouseLeave(e);
+    }
+
+    static bool IsFreehand(ToolKind k) => k is ToolKind.Pen or ToolKind.Highlighter or ToolKind.Laser;
+
+    /// <summary>Pen-tablet pressure (0–1), or null for a mouse.</summary>
+    float? PressureOf(MouseEventArgs e)
+    {
+        var device = e.StylusDevice;
+        if (device == null) return null;
+        var pts = device.GetStylusPoints(this);
+        return pts.Count > 0 ? pts[pts.Count - 1].PressureFactor : null;
     }
 
     protected override void OnMouseLeftButtonUp(MouseButtonEventArgs e) => Finish();
@@ -284,21 +385,27 @@ public sealed class DrawCanvas : FrameworkElement
         S.ScaleSelected(e.Delta > 0 ? 1.1 : 1 / 1.1);
     }
 
-    void UpdateCurrent(Point p)
+    void UpdateCurrent(Point p, float? pressure)
     {
         var it = current!;
         bool shift = (Keyboard.Modifiers & ModifierKeys.Shift) != 0;
         switch (it.Kind)
         {
             case ToolKind.Range: // drag to reposition before letting go
-                if (ToWorld(p, out var moved)) it.Points[0] = moved;
+                if (!it.Follow && ToWorld(p, out var moved)) it.Points[0] = moved;
                 break;
 
             case ToolKind.Pen:
             case ToolKind.Highlighter:
             case ToolKind.Laser:
                 if ((p - lastScreen).Length < 1.5) return;
-                if (ToStore(p, it.Space, out var w)) { it.Points.Add(w); lastScreen = p; }
+                if (ToStore(p, it.Space, out var w))
+                {
+                    it.Points.Add(w);
+                    it.Pressure?.Add(pressure ?? it.Pressure[^1]);
+                    currentScreen.Add(p);
+                    lastScreen = p;
+                }
                 break;
 
             case ToolKind.Line:
@@ -370,12 +477,54 @@ public sealed class DrawCanvas : FrameworkElement
             }
             else if (IsComplete(it))
             {
+                if (it.Kind is ToolKind.Pen or ToolKind.Highlighter) Simplify(it);
                 S.Stamp(it);
                 S.AddItem(it);
             }
             InvalidateVisual();
         }
         if (IsMouseCaptured) ReleaseMouseCapture();
+    }
+
+    /// <summary>Drops points that don't change the stroke's shape by more than half a pixel (smaller files, faster drawing).</summary>
+    void Simplify(DrawItem it)
+    {
+        if (currentScreen.Count != it.Points.Count || it.Points.Count < 3) return;
+        var keep = Rdp(currentScreen, 0.5);
+        var pts = keep.Select(i => it.Points[i]).ToList();
+        var pressure = it.Pressure != null && it.Pressure.Count == it.Points.Count ? keep.Select(i => it.Pressure[i]).ToList() : null;
+        it.Points.Clear();
+        it.Points.AddRange(pts);
+        it.Pressure = pressure;
+    }
+
+    /// <summary>Ramer–Douglas–Peucker line simplification; returns the indices to keep, in order.</summary>
+    public static List<int> Rdp(IReadOnlyList<Point> pts, double epsilon)
+    {
+        var keep = new bool[pts.Count];
+        keep[0] = keep[^1] = true;
+        var stack = new Stack<(int A, int B)>();
+        stack.Push((0, pts.Count - 1));
+        while (stack.Count > 0)
+        {
+            var (a, b) = stack.Pop();
+            double best = 0;
+            int index = -1;
+            for (int i = a + 1; i < b; i++)
+            {
+                double d = SegmentDistance(pts[i], pts[a], pts[b]);
+                if (d > best) { best = d; index = i; }
+            }
+            if (index >= 0 && best > epsilon)
+            {
+                keep[index] = true;
+                stack.Push((a, index));
+                stack.Push((index, b));
+            }
+        }
+        var result = new List<int>();
+        for (int i = 0; i < keep.Length; i++) if (keep[i]) result.Add(i);
+        return result;
     }
 
     bool IsComplete(DrawItem it)
@@ -457,6 +606,7 @@ public sealed class DrawCanvas : FrameworkElement
         for (int i = 0; i < it.Points.Count; i++) it.Points[i] += delta;
         lastScreen = p;
         moved = true;
+        if (it.Space == Space.Screen) staticDirty = true;
         InvalidateVisual();
     }
 
@@ -473,6 +623,8 @@ public sealed class DrawCanvas : FrameworkElement
             {
                 erased.Add((it, i));
                 S.Items.RemoveAt(i);
+                S.Touch();
+                staticDirty = true;
             }
         }
         InvalidateVisual();
@@ -570,11 +722,21 @@ public sealed class DrawCanvas : FrameworkElement
 
         if (!S.Hidden)
         {
+            if (staticDirty)
+            {
+                using (var ctx = staticLayer.Open())
+                    foreach (var it in S.ContextItems)
+                        if (it.Space == Space.Screen && it.ReplayKey == null) RenderItem(ctx, it);
+                staticDirty = false;
+            }
+            dc.DrawDrawing(staticLayer);
+
             bool map = CanUseMap;
             if (map && S.Settings.ShowGrid) DrawGrid(dc);
 
-            foreach (var it in S.Items)
+            foreach (var it in S.ContextItems)
             {
+                if (it.Space == Space.Screen && it.ReplayKey == null) continue; // in the cached layer
                 if (it.Space == Space.World && !map) continue;
                 if (!S.Visible(it, out double alpha)) continue;
                 if (alpha < 1) dc.PushOpacity(alpha);
@@ -596,10 +758,324 @@ public sealed class DrawCanvas : FrameworkElement
 
             if (S.Tool == ToolKind.Select && S.Selected is { } sel && IsShown(sel)) DrawSelection(dc, sel);
             if (worldVisible) DrawMinimap(dc);
+            DrawGhost(dc);
+            DrawPings(dc, map);
         }
 
+        if (S.Spotlight) DrawSpotlight(dc);
         if (S.PickingMinimap) DrawPicking(dc);
+        if (S.WheelOpen) DrawWheel(dc);
+        if (S.CheatSheet) DrawCheatSheet(dc);
         if (!SuppressBadge) DrawBadge(dc);
+    }
+
+    /// <summary>Expanding rings, like a League ping.</summary>
+    void DrawPings(DrawingContext dc, bool map)
+    {
+        foreach (var (pos, space, color, at) in pings)
+        {
+            Point c;
+            if (space == Space.Screen) c = pos;
+            else if (!map || !Projector.TryProject(pos.X, pos.Y, out c)) continue;
+            double age = (DateTime.Now - at).TotalSeconds;
+            for (int ring = 0; ring < 2; ring++)
+            {
+                double t = (age - ring * 0.25) / (PingSeconds - 0.25);
+                if (t is < 0 or > 1) continue;
+                double eased = 1 - Math.Pow(1 - t, 3);
+                byte a = (byte)(255 * (1 - t));
+                var pen = new Pen(BrushOf(Color.FromArgb(a, color.R, color.G, color.B)), 4 - 2 * t);
+                dc.DrawEllipse(null, pen, c, 8 + 70 * eased, 8 + 70 * eased);
+            }
+            double dotA = Math.Clamp(1 - age / PingSeconds, 0, 1);
+            dc.DrawEllipse(BrushOf(Color.FromArgb((byte)(255 * dotA), color.R, color.G, color.B)), new Pen(BrushOf(Color.FromArgb((byte)(200 * dotA), 0, 0, 0)), 1.5), c, 6, 6);
+        }
+    }
+
+    /// <summary>Darkens everything except a soft circle around the cursor.</summary>
+    void DrawSpotlight(DrawingContext dc)
+    {
+        var c = CursorProvider?.Invoke() ?? new Point(RenderSize.Width / 2, RenderSize.Height / 2);
+        double r = Math.Clamp(S.Settings.SpotlightRadius, 60, 800);
+        byte dim = (byte)(255 * Math.Clamp(S.Settings.SpotlightDim, 0.1, 0.95));
+        var brush = new RadialGradientBrush
+        {
+            MappingMode = BrushMappingMode.Absolute,
+            Center = c,
+            GradientOrigin = c,
+            RadiusX = r * 1.25,
+            RadiusY = r * 1.25,
+            GradientStops =
+            {
+                new GradientStop(Color.FromArgb(0, 0, 0, 0), 0),
+                new GradientStop(Color.FromArgb(0, 0, 0, 0), 0.78),
+                new GradientStop(Color.FromArgb(dim, 0, 0, 0), 1),
+            },
+        };
+        brush.Freeze();
+        dc.DrawRectangle(brush, null, new Rect(RenderSize));
+    }
+
+    /// <summary>Faint copy of the range circle or marker under the cursor, before you click.</summary>
+    void DrawGhost(DrawingContext dc)
+    {
+        if (!S.DrawMode || hover is not Point h || current != null || S.WheelOpen) return;
+        if (S.Tool == ToolKind.Range && S.CurrentRange is { } preset && CanUseMap)
+        {
+            bool old = viaMinimap;
+            viaMinimap = OnMinimap(h);
+            bool follow = S.Settings.RangeFollow;
+            Point w = default;
+            bool ok = follow ? followLocked && Projector.TryLookAt(out w) : ToWorld(h, out w);
+            if (ok)
+            {
+                var ghost = new DrawItem { Kind = ToolKind.Range, Space = Space.World, Color = ParseColor(preset.Color), Thickness = 2,
+                    Radius = preset.Radius, Text = $"{preset.Name} {preset.Radius:0}", Points = { w }, Follow = follow };
+                dc.PushOpacity(0.45);
+                RenderRange(dc, ghost);
+                dc.Pop();
+            }
+            viaMinimap = old;
+        }
+        else if (S.Tool == ToolKind.Marker)
+        {
+            dc.PushOpacity(0.5);
+            MarkerRenderer.Draw(dc, S.Marker, h, 22 + S.Thickness * 1.5, Ppd);
+            dc.Pop();
+        }
+    }
+
+    // ---------------------------------------------------------------- tool wheel
+
+    void OnWheelChanged(bool open)
+    {
+        if (open)
+        {
+            var c = CursorProvider?.Invoke() ?? new Point(RenderSize.Width / 2, RenderSize.Height / 2);
+            double m = WheelR4 + 12;
+            c.X = Math.Clamp(c.X, m, Math.Max(m, RenderSize.Width - m));
+            c.Y = Math.Clamp(c.Y, m, Math.Max(m, RenderSize.Height - m));
+            wheelCenter = c;
+            wheelTool = null;
+            wheelColor = null;
+        }
+        else
+        {
+            if (wheelTool is ToolKind t) S.SelectTool(t);
+            if (wheelColor is int ci) S.Color = AppState.Palette[ci]; // after the tool, which loads its own colour
+        }
+        InvalidateVisual();
+    }
+
+    void UpdateWheelHover(Point p)
+    {
+        var d = p - wheelCenter;
+        double r = d.Length;
+        double a = (Math.Atan2(d.Y, d.X) + Math.PI / 2 + 2 * Math.PI) % (2 * Math.PI); // 0 = straight up, clockwise
+        ToolKind? tool = wheelTool;
+        int? color = wheelColor;
+        if (r < WheelR1) tool = null;
+        else if (r <= WheelR2)
+        {
+            double step = 2 * Math.PI / AppState.Palette.Length;
+            color = (int)Math.Floor((a + step / 2) / step) % AppState.Palette.Length;
+        }
+        else if (r >= WheelR3 - 4)
+        {
+            double step = 2 * Math.PI / WheelTools.Length;
+            tool = WheelTools[(int)Math.Floor((a + step / 2) / step) % WheelTools.Length];
+        }
+        if (color != wheelColor && color is int c) S.Color = AppState.Palette[c]; // colours apply as you pass over them
+        if (tool != wheelTool || color != wheelColor)
+        {
+            wheelTool = tool;
+            wheelColor = color;
+            InvalidateVisual();
+        }
+    }
+
+    void DrawWheel(DrawingContext dc)
+    {
+        if (wheelCenter == default) wheelCenter = new Point(RenderSize.Width / 2, RenderSize.Height / 2);
+        var c = wheelCenter;
+        dc.DrawEllipse(BrushOf(Color.FromArgb(225, 22, 23, 28)), new Pen(BrushOf(Color.FromArgb(70, 255, 255, 255)), 1), c, WheelR4 + 6, WheelR4 + 6);
+
+        // Inner ring: colours.
+        int n = AppState.Palette.Length;
+        double step = 2 * Math.PI / n;
+        for (int i = 0; i < n; i++)
+        {
+            bool hot = wheelColor == i, currentColor = AppState.Palette[i] == S.Color;
+            double a0 = i * step - step / 2, a1 = a0 + step;
+            var sector = Sector(c, WheelR1, hot ? WheelR2 + 6 : WheelR2, a0 + 0.02, a1 - 0.02);
+            dc.DrawGeometry(BrushOf(AppState.Palette[i]), currentColor || hot ? new Pen(Brushes.White, hot ? 3 : 2) : null, sector);
+        }
+
+        // Outer ring: tools.
+        n = WheelTools.Length;
+        step = 2 * Math.PI / n;
+        var accent = BrushOf(Color.FromRgb(0x3A, 0x6F, 0xF7));
+        var activeBg = BrushOf(Color.FromArgb(55, 255, 255, 255));
+        for (int i = 0; i < n; i++)
+        {
+            var tool = WheelTools[i];
+            double a0 = i * step - step / 2, a1 = a0 + step;
+            bool hot = wheelTool == tool, active = S.Tool == tool;
+            if (hot || active) dc.DrawGeometry(hot ? accent : activeBg, null, Sector(c, WheelR3, WheelR4, a0 + 0.015, a1 - 0.015));
+            double mid = (a0 + a1) / 2, rr = (WheelR3 + WheelR4) / 2;
+            var ic = new Point(c.X + rr * Math.Sin(mid), c.Y - rr * Math.Cos(mid));
+            DrawToolIcon(dc, tool, ic, 26);
+        }
+
+        // Centre label.
+        string label = wheelTool is ToolKind t ? ToolLabel(t) : "Pick a tool";
+        var ft = new FormattedText(label, CultureInfo.CurrentUICulture, FlowDirection.LeftToRight, TextFace, 13, Brushes.White, Ppd)
+            { MaxTextWidth = WheelR1 * 2 - 6, TextAlignment = TextAlignment.Center };
+        dc.DrawEllipse(BrushOf(S.Color), null, new Point(c.X, c.Y - 14), 6, 6);
+        dc.DrawText(ft, new Point(c.X - (WheelR1 * 2 - 6) / 2, c.Y - 2));
+    }
+
+    static string ToolLabel(ToolKind t) => t switch
+    {
+        ToolKind.Ellipse => "Circle",
+        ToolKind.Range => "Range circle",
+        ToolKind.Laser => "Laser",
+        _ => t.ToString(),
+    };
+
+    static Geometry Sector(Point c, double r0, double r1, double a0, double a1)
+    {
+        Point P(double r, double a) => new(c.X + r * Math.Sin(a), c.Y - r * Math.Cos(a));
+        bool large = a1 - a0 > Math.PI;
+        var g = new StreamGeometry();
+        using (var ctx = g.Open())
+        {
+            ctx.BeginFigure(P(r0, a0), true, true);
+            ctx.LineTo(P(r1, a0), true, false);
+            ctx.ArcTo(P(r1, a1), new Size(r1, r1), 0, large, SweepDirection.Clockwise, true, false);
+            ctx.LineTo(P(r0, a1), true, false);
+            ctx.ArcTo(P(r0, a0), new Size(r0, r0), 0, large, SweepDirection.Counterclockwise, true, false);
+        }
+        g.Freeze();
+        return g;
+    }
+
+    static readonly Typeface IconFace = new(new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"), FontStyles.Normal, FontWeights.Normal, FontStretches.Normal);
+
+    void DrawToolIcon(DrawingContext dc, ToolKind tool, Point c, double size)
+    {
+        var fg = Brushes.White;
+        var stroke = new Pen(fg, 2) { StartLineCap = PenLineCap.Round, EndLineCap = PenLineCap.Round, LineJoin = PenLineJoin.Round };
+        double h = size / 2;
+        string? glyph = tool switch
+        {
+            ToolKind.Pen => "",
+            ToolKind.Highlighter => "",
+            ToolKind.Eraser => "",
+            ToolKind.Arrow => "",
+            ToolKind.Text => "",
+            _ => null,
+        };
+        if (glyph != null)
+        {
+            var ft = new FormattedText(glyph, CultureInfo.InvariantCulture, FlowDirection.LeftToRight, IconFace, size * 0.8, fg, Ppd);
+            dc.DrawText(ft, new Point(c.X - ft.Width / 2, c.Y - ft.Height / 2));
+            return;
+        }
+        switch (tool)
+        {
+            case ToolKind.Select:
+            {
+                var pts = new[] { (0.0, 0.0), (0, 15), (4, 11.5), (6.6, 17), (9, 16), (6.4, 10.4), (11.5, 10.4) }
+                    .Select(q => new Point(c.X - 5 + q.Item1, c.Y - 9 + q.Item2)).ToList();
+                var g = new StreamGeometry();
+                using (var ctx = g.Open()) { ctx.BeginFigure(pts[0], true, true); ctx.PolyLineTo(pts.Skip(1).ToList(), true, true); }
+                g.Freeze();
+                dc.DrawGeometry(fg, null, g);
+                break;
+            }
+            case ToolKind.Laser:
+                dc.DrawEllipse(BrushOf(Color.FromArgb(90, S.Color.R, S.Color.G, S.Color.B)), null, c, h * 0.75, h * 0.75);
+                dc.DrawEllipse(BrushOf(S.Color), null, c, h * 0.35, h * 0.35);
+                dc.DrawEllipse(Brushes.White, null, c, h * 0.13, h * 0.13);
+                break;
+            case ToolKind.Line:
+                dc.DrawLine(stroke, new Point(c.X - h * 0.6, c.Y + h * 0.6), new Point(c.X + h * 0.6, c.Y - h * 0.6));
+                break;
+            case ToolKind.Rectangle:
+                dc.DrawRoundedRectangle(null, stroke, new Rect(c.X - h * 0.65, c.Y - h * 0.48, h * 1.3, h * 0.96), 1.5, 1.5);
+                break;
+            case ToolKind.Ellipse:
+                dc.DrawEllipse(null, stroke, c, h * 0.62, h * 0.62);
+                break;
+            case ToolKind.Marker:
+                MarkerRenderer.Draw(dc, S.Marker, c, size * 0.85, Ppd);
+                break;
+            case ToolKind.Ping:
+                dc.DrawEllipse(null, new Pen(BrushOf(S.Color), 2), c, h * 0.75, h * 0.75);
+                dc.DrawEllipse(null, new Pen(BrushOf(Color.FromArgb(140, S.Color.R, S.Color.G, S.Color.B)), 1.5), c, h * 0.45, h * 0.45);
+                dc.DrawEllipse(BrushOf(S.Color), null, c, h * 0.16, h * 0.16);
+                break;
+            case ToolKind.Range:
+                dc.DrawEllipse(null, stroke, c, h * 0.72, h * 0.72);
+                dc.DrawEllipse(null, stroke, c, h * 0.32, h * 0.32);
+                break;
+        }
+    }
+
+    // ---------------------------------------------------------------- shortcut cheat sheet
+
+    void DrawCheatSheet(DrawingContext dc)
+    {
+        var groups = HotkeyCatalog.All(S.Settings)
+            .Select(a => (a.Group, a.Name, Key: S.BindingFor(a.Id)?.Display))
+            .Where(x => x.Key != null)
+            .GroupBy(x => x.Group)
+            .ToList();
+        if (groups.Count == 0) return;
+
+        // Lay out groups into columns of roughly equal height.
+        const double lineH = 21, colW = 330, pad = 22;
+        var columns = new List<List<(string Text, bool Header, string? Key)>> { new() };
+        int perColumn = Math.Max(12, (int)Math.Ceiling(groups.Sum(g => g.Count() + 2) / 3.0));
+        foreach (var g in groups)
+        {
+            var col = columns[^1];
+            if (col.Count > 0 && col.Count + g.Count() + 2 > perColumn && columns.Count < 4) columns.Add(col = new());
+            if (col.Count > 0) col.Add(("", false, null));
+            col.Add((g.Key, true, null));
+            foreach (var x in g) col.Add((x.Name, false, x.Key));
+        }
+
+        double w = columns.Count * colW + pad * 2;
+        double h = columns.Max(c => c.Count) * lineH + pad * 2 + 30;
+        var area = new Rect((RenderSize.Width - w) / 2, Math.Max(20, (RenderSize.Height - h) / 2), w, h);
+        dc.DrawRoundedRectangle(BrushOf(Color.FromArgb(235, 18, 19, 24)), new Pen(BrushOf(Color.FromArgb(70, 255, 255, 255)), 1), area, 12, 12);
+        var title = new FormattedText("RiftPen shortcuts", CultureInfo.CurrentUICulture, FlowDirection.LeftToRight, TextFace, 17, Brushes.White, Ppd);
+        dc.DrawText(title, new Point(area.X + pad, area.Y + pad - 4));
+
+        var dim = BrushOf(Color.FromArgb(170, 255, 255, 255));
+        var keyBrush = BrushOf(Color.FromRgb(0x8A, 0xB4, 0xFF));
+        for (int ci = 0; ci < columns.Count; ci++)
+        {
+            double x = area.X + pad + ci * colW, y = area.Y + pad + 30;
+            foreach (var (text, header, key) in columns[ci])
+            {
+                if (header)
+                {
+                    dc.DrawText(new FormattedText(text.ToUpperInvariant(), CultureInfo.CurrentUICulture, FlowDirection.LeftToRight, TextFace, 11, dim, Ppd), new Point(x, y + 4));
+                }
+                else if (key != null)
+                {
+                    var k = new FormattedText(key, CultureInfo.CurrentUICulture, FlowDirection.LeftToRight, TextFace, 13, keyBrush, Ppd);
+                    dc.DrawText(k, new Point(x, y));
+                    var t = new FormattedText(text, CultureInfo.CurrentUICulture, FlowDirection.LeftToRight, TextFace, 13, Brushes.White, Ppd)
+                        { MaxTextWidth = colW - 130, MaxLineCount = 1, Trimming = TextTrimming.CharacterEllipsis };
+                    dc.DrawText(t, new Point(x + 118, y));
+                }
+                y += lineH;
+            }
+        }
     }
 
     void RenderItem(DrawingContext dc, DrawItem it)
@@ -607,7 +1083,7 @@ public sealed class DrawCanvas : FrameworkElement
         if (it.Points.Count == 0) return;
         bool hl = it.Kind == ToolKind.Highlighter;
         var color = hl ? Color.FromArgb(105, it.Color.R, it.Color.G, it.Color.B) : it.Color;
-        var brush = Freeze(new SolidColorBrush(color));
+        var brush = BrushOf(color);
 
         switch (it.Kind)
         {
@@ -624,15 +1100,68 @@ public sealed class DrawCanvas : FrameworkElement
 
         double th = (hl ? it.Thickness * 3.5 : it.Thickness) * (minimapPass ? 0.35 : 1);
         if (minimapPass) th = Math.Max(1.2, th);
-        var pen = new Pen(brush, th) { StartLineCap = PenLineCap.Round, EndLineCap = PenLineCap.Round, LineJoin = PenLineJoin.Round };
-        pen.Freeze();
+        var pen = PenOf(color, th);
+        var runs = ScreenPaths(it);
 
-        foreach (var run in ScreenPaths(it))
+        // Tablet strokes: width follows pen pressure.
+        if (!minimapPass && it.Pressure is { } pr && runs.Count == 1 && runs[0].Count == pr.Count && pr.Count > 1)
+        {
+            var run = runs[0];
+            for (int i = 1; i < run.Count; i++)
+                dc.DrawLine(PenOf(color, Math.Max(0.5, Math.Round(th * (0.25 + 0.95 * (pr[i - 1] + pr[i]) / 2) * 2) / 2)), run[i - 1], run[i]);
+            return;
+        }
+
+        bool smooth = S.Settings.SmoothStrokes && IsFreehand(it.Kind);
+        foreach (var run in runs)
         {
             if (it.Kind == ToolKind.Arrow) { DrawArrow(dc, run, brush, pen, th); continue; }
             if (run.Count == 1) { dc.DrawEllipse(brush, null, run[0], th / 2, th / 2); continue; }
-            dc.DrawGeometry(null, pen, Polyline(run));
+            dc.DrawGeometry(null, pen, smooth ? SmoothLine(run) : Polyline(run));
         }
+    }
+
+    /// <summary>Curves through the midpoints between points, so freehand strokes look smooth instead of jagged.</summary>
+    static Geometry SmoothLine(List<Point> pts)
+    {
+        if (pts.Count < 3) return Polyline(pts);
+        var g = new StreamGeometry();
+        using (var c = g.Open())
+        {
+            c.BeginFigure(pts[0], false, false);
+            for (int i = 1; i < pts.Count - 1; i++)
+                c.QuadraticBezierTo(pts[i], new Point((pts[i].X + pts[i + 1].X) / 2, (pts[i].Y + pts[i + 1].Y) / 2), true, true);
+            c.LineTo(pts[^1], true, true);
+        }
+        g.Freeze();
+        return g;
+    }
+
+    static uint ColorKey(Color c) => (uint)(c.A << 24 | c.R << 16 | c.G << 8 | c.B);
+
+    SolidColorBrush BrushOf(Color c)
+    {
+        if (!brushCache.TryGetValue(ColorKey(c), out var b))
+        {
+            if (brushCache.Count > 256) brushCache.Clear();
+            b = new SolidColorBrush(c);
+            b.Freeze();
+            brushCache[ColorKey(c)] = b;
+        }
+        return b;
+    }
+
+    Pen PenOf(Color c, double th)
+    {
+        var k = (ColorKey(c), th);
+        if (!penCache.TryGetValue(k, out var p))
+        {
+            if (penCache.Count > 512) penCache.Clear();
+            p = new Pen(BrushOf(c), th) { StartLineCap = PenLineCap.Round, EndLineCap = PenLineCap.Round, LineJoin = PenLineJoin.Round };
+            p.Freeze();
+            penCache[k] = p;
+        }
+        return p;
     }
 
     void RenderLaser(DrawingContext dc, DrawItem it, double alpha)
@@ -648,7 +1177,7 @@ public sealed class DrawCanvas : FrameworkElement
         foreach (var run in ScreenPaths(it))
         {
             if (run.Count == 1) { dc.DrawEllipse(core.Brush, null, run[0], th, th); continue; }
-            var g = Polyline(run);
+            var g = S.Settings.SmoothStrokes ? SmoothLine(run) : Polyline(run);
             dc.DrawGeometry(null, glow, g);
             dc.DrawGeometry(null, core, g);
             dc.DrawGeometry(null, hot, g);
@@ -659,6 +1188,15 @@ public sealed class DrawCanvas : FrameworkElement
     void RenderRange(DrawingContext dc, DrawItem it)
     {
         var c = it.Points[0];
+        // A follow circle waits (faded) while the camera isn't locked onto anyone.
+        bool waiting = it.Follow && !followLocked && !minimapPass;
+        if (waiting) dc.PushOpacity(0.4);
+        try { RenderRangeInner(dc, it, c, waiting); }
+        finally { if (waiting) dc.Pop(); }
+    }
+
+    void RenderRangeInner(DrawingContext dc, DrawItem it, Point c, bool waiting)
+    {
         var runs = ScreenPaths(it);
         var edge = Freeze(new SolidColorBrush(it.Color));
         double th = minimapPass ? 1.2 : it.Thickness;
@@ -683,7 +1221,7 @@ public sealed class DrawCanvas : FrameworkElement
         if (minimapPass) return;
         if (MapPoint(c, out var mid)) dc.DrawEllipse(edge, null, mid, 3, 3);
         if (S.Settings.ShowRangeLabels && !string.IsNullOrEmpty(it.Text) && MapPoint(new Point(c.X, c.Y + it.Radius), out var top))
-            Label(dc, it.Text!, top, 12);
+            Label(dc, it.Follow ? $"{it.Text}  ·  {(waiting ? "lock the camera to follow" : "following")}" : it.Text!, top, 12);
     }
 
     /// <summary>Map drawings repeated, small, on the minimap.</summary>
@@ -696,7 +1234,7 @@ public sealed class DrawCanvas : FrameworkElement
 
         minimapPass = true;
         dc.PushClip(new RectangleGeometry(r));
-        foreach (var it in S.Items)
+        foreach (var it in S.ContextItems)
         {
             if (it.Space != Space.World || !S.Visible(it, out double alpha)) continue;
             if (alpha < 1) dc.PushOpacity(alpha);
@@ -895,6 +1433,8 @@ public sealed class DrawCanvas : FrameworkElement
             {
                 ToolKind.Select => "  ·  drag to move, scroll to resize",
                 ToolKind.Laser => "  ·  laser fades",
+                ToolKind.Ping => "  ·  click to ping",
+                ToolKind.Range when S.Settings.RangeFollow => "  ·  circles follow the camera-locked champion",
                 _ => "",
             };
             lines.Add($"DRAWING {where}{timeline}{tool}  ·  Esc to stop");

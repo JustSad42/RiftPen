@@ -14,7 +14,16 @@ namespace RiftPen;
 /// </summary>
 public sealed class ReplayApiClient : IDisposable
 {
-    const double PollIntervalMs = 4;
+    // Fast while the camera moves; slow once it has been still for a second (saves CPU for RiftPen and the game).
+    const double FastIntervalMs = 4, QuietIntervalMs = 33, QuietAfterMs = 1000;
+    long lastMoveTicks, boostUntilTicks;
+    CameraState? lastPolled;
+
+    /// <summary>Poll at full speed for the next couple of seconds (e.g. when drawing starts).</summary>
+    public void Boost() => Interlocked.Exchange(ref boostUntilTicks, Stopwatch.GetTimestamp() + Stopwatch.Frequency * 2);
+
+    /// <summary>True while polling fast.</summary>
+    public bool Active { get; private set; }
 
     sealed record Sample(CameraState Cam, long Timestamp, Vec3 Velocity);
 
@@ -23,7 +32,7 @@ public sealed class ReplayApiClient : IDisposable
 
     volatile PlaybackState? playback;
     volatile bool refreshPlayback = true;
-    int playbackCounter;
+    long lastPlaybackTicks;
 
     public PlaybackState? Playback => playback;
 
@@ -76,6 +85,18 @@ public sealed class ReplayApiClient : IDisposable
             catch { /* replay closed; nothing to control */ }
             refreshPlayback = true;
         });
+    }
+
+    /// <summary>Changes a /replay/render setting (e.g. {"interfaceMinimap": false}). Returns false if the game refused.</summary>
+    public async Task<bool> SetRenderAsync(object body)
+    {
+        try
+        {
+            using var content = new StringContent(JsonSerializer.Serialize(body), System.Text.Encoding.UTF8, "application/json");
+            using var resp = await http.PostAsync("replay/render", content);
+            return resp.IsSuccessStatusCode;
+        }
+        catch { return false; }
     }
 
     void PollPlayback(CancellationToken ct)
@@ -163,13 +184,15 @@ public sealed class ReplayApiClient : IDisposable
                     var cam = Parse(doc.RootElement);
                     long now = Stopwatch.GetTimestamp();
                     latest = new Sample(cam, now, Velocity(cam.Position, now));
+                    if (!CameraState.SameView(cam, lastPolled)) lastMoveTicks = now;
+                    lastPolled = cam;
                     lastError = "";
                     count++;
                     // The replay clock changes slowly; read it ~20 times a second, or right after we changed it.
-                    if (refreshPlayback || ++playbackCounter >= 12)
+                    if (refreshPlayback || (now - lastPlaybackTicks) * 1000.0 / Stopwatch.Frequency >= 50)
                     {
                         refreshPlayback = false;
-                        playbackCounter = 0;
+                        lastPlaybackTicks = now;
                         PollPlayback(ct);
                     }
                 }
@@ -191,8 +214,12 @@ public sealed class ReplayApiClient : IDisposable
                 if (sinceRate >= 1) { PollsPerSecond = count / sinceRate; count = 0; rateStart = nowT; }
 
                 // Wait out the rest of the interval.
+                long t = Stopwatch.GetTimestamp();
+                bool moving = (t - lastMoveTicks) * 1000.0 / Stopwatch.Frequency < QuietAfterMs;
+                Active = moving || t < Interlocked.Read(ref boostUntilTicks);
+                double interval = Active ? FastIntervalMs : QuietIntervalMs;
                 while (!ct.IsCancellationRequested &&
-                       (Stopwatch.GetTimestamp() - start) * 1000.0 / Stopwatch.Frequency < PollIntervalMs)
+                       (Stopwatch.GetTimestamp() - start) * 1000.0 / Stopwatch.Frequency < interval)
                     Thread.Sleep(1);
             }
         }
@@ -235,10 +262,11 @@ public sealed class ReplayApiClient : IDisposable
         var q = r.GetProperty("cameraRotation");
         double fov = r.TryGetProperty("fieldOfView", out var f) && f.ValueKind == JsonValueKind.Number ? f.GetDouble() : 45;
         string mode = r.TryGetProperty("cameraMode", out var m) && m.ValueKind == JsonValueKind.String ? m.GetString() ?? "" : "";
+        bool attached = r.TryGetProperty("cameraAttached", out var a) && a.ValueKind == JsonValueKind.True;
         return new CameraState(
             new Vec3(p.GetProperty("x").GetDouble(), p.GetProperty("y").GetDouble(), p.GetProperty("z").GetDouble()),
             q.GetProperty("x").GetDouble(), q.GetProperty("y").GetDouble(), q.GetProperty("z").GetDouble(),
-            fov, mode);
+            fov, mode, attached);
     }
 
     public void Dispose()

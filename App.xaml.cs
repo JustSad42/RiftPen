@@ -53,12 +53,19 @@ public partial class App : Application
         var toolbar = new ToolbarWindow(overlay) { Owner = overlay };
         toolbar.Show();
 
+        var timeline = new TimelineWindow { Owner = overlay };
+        timeline.OpenNotesRequested += toolbar.OpenNotes;
+        overlay.Timeline = timeline;
+
         S.UiRequest += what =>
         {
             switch (what)
             {
                 case "screenshot": overlay.TakeScreenshot(toolbar); break;
                 case "toggleToolbar": toolbar.ToggleVisible(); break;
+                case "notes": toolbar.OpenNotes(); break;
+                case "ping": overlay.Surface.PingAtCursor(); break;
+                case "detectMinimap": overlay.DetectMinimap(automatic: false); break;
                 case "minimapPicked": toolbar.OpenSettings(SettingsWindow.ReplayTab); break;
             }
         };
@@ -68,6 +75,17 @@ public partial class App : Application
             toggleDraw: () => S.DrawMode = !S.DrawMode,
             openSettings: () => toolbar.OpenSettings(0),
             quit: Shutdown);
+
+        // First run of the real app: add RiftPen to the Start menu (keeps it pointing here if the exe moved).
+        if (!e.Args.Contains("--demo") && !StartMenu.IsDevBuild && (!S.Settings.StartMenuShortcutDone || StartMenu.Exists))
+        {
+            try
+            {
+                StartMenu.Create();
+                S.Settings.StartMenuShortcutDone = true;
+            }
+            catch (Exception ex) { AppSettings.LogError(ex); }
+        }
 
         if (e.Args.Contains("--demo"))
         {

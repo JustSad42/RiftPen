@@ -61,7 +61,7 @@ public sealed class HotkeyBinding
         var key = KeyInterop.KeyFromVirtualKey(vk);
         return key switch
         {
-            Key.Oem3 => "`",
+            Key.Oem3 => "~ `",
             Key.OemOpenBrackets => "[",
             Key.OemCloseBrackets => "]",
             Key.OemPlus => "=",
@@ -117,6 +117,8 @@ public static class HotkeyCatalog
         {
             new("toggleDraw", "Draw mode on/off", "General", HotkeyBinding.Of(Key.Oem3, L)),
             new("holdDraw", "Hold to draw (release to stop)", "General", HotkeyBinding.None(L)),
+            new("wheel", "Tool wheel (hold, release to pick)", "General", HotkeyBinding.None(L)),
+            new("cheatsheet", "Show shortcuts (hold)", "General", HotkeyBinding.Of(Key.F1)),
             new("stopDraw", "Stop drawing", "General", HotkeyBinding.Of(Key.Escape)),
             new("cycleSpace", "Switch AUTO / MAP / SCREEN", "General", HotkeyBinding.Of(Key.M)),
             new("undo", "Undo", "General", HotkeyBinding.Of(Key.Z, ctrl: true)),
@@ -126,12 +128,15 @@ public static class HotkeyCatalog
             new("hide", "Hide / show drawings", "General", HotkeyBinding.Of(Key.H, E, ctrl: true, alt: true)),
             new("toggleToolbar", "Show / hide toolbar", "General", HotkeyBinding.Of(Key.T, E, ctrl: true, alt: true)),
             new("screenshot", "Screenshot with drawings", "General", HotkeyBinding.Of(Key.F8, L)),
+            new("spotlight", "Spotlight around cursor on/off", "General", HotkeyBinding.Of(Key.S, L, ctrl: true, alt: true)),
+            new("ping", "Ping at cursor", "General", HotkeyBinding.None(L)),
             new("grid", "Calibration test grid", "General", HotkeyBinding.Of(Key.G)),
 
             new("tool:Select", "Select / move", "Tools", HotkeyBinding.Of(Key.S)),
             new("tool:Pen", "Pen", "Tools", HotkeyBinding.Of(Key.P)),
             new("tool:Highlighter", "Highlighter", "Tools", HotkeyBinding.Of(Key.H)),
             new("tool:Laser", "Laser pointer (fades)", "Tools", HotkeyBinding.Of(Key.Q)),
+            new("tool:Ping", "Ping (click for a ripple)", "Tools", HotkeyBinding.Of(Key.W)),
             new("tool:Eraser", "Eraser", "Tools", HotkeyBinding.Of(Key.E)),
             new("tool:Line", "Line", "Tools", HotkeyBinding.Of(Key.L)),
             new("tool:Arrow", "Arrow", "Tools", HotkeyBinding.Of(Key.A)),
@@ -140,6 +145,7 @@ public static class HotkeyCatalog
             new("tool:Text", "Text", "Tools", HotkeyBinding.Of(Key.T)),
             new("tool:Marker", "Marker", "Tools", HotkeyBinding.Of(Key.K)),
             new("tool:Range", "Range circle (last used)", "Tools", HotkeyBinding.Of(Key.V)),
+            new("rangeFollow", "Range circles follow locked champion on/off", "Tools", HotkeyBinding.Of(Key.F)),
             new("sizeDown", "Smaller", "Tools", HotkeyBinding.Of(Key.OemOpenBrackets)),
             new("sizeUp", "Bigger", "Tools", HotkeyBinding.Of(Key.OemCloseBrackets)),
 
@@ -151,6 +157,7 @@ public static class HotkeyCatalog
             new("notePrev", "Jump to previous note", "Replay", HotkeyBinding.Of(Key.Left, shift: true)),
             new("noteNext", "Jump to next note", "Replay", HotkeyBinding.Of(Key.Right, shift: true)),
             new("timeline", "Timeline notes on/off", "Replay", HotkeyBinding.None()),
+            new("notes", "Notes list for this replay", "Replay", HotkeyBinding.Of(Key.N)),
         };
         for (int i = 0; i < 10; i++)
             list.Add(new($"color:{i}", $"Color {(i + 1) % 10} ({ColorNames[i]})", "Colors", HotkeyBinding.Of(i == 9 ? Key.D0 : Key.D1 + i)));
@@ -200,11 +207,50 @@ public sealed class InputHook : IDisposable
     public bool EditingText { set => editingText = value; }
     public IntPtr LeagueWindow { set => Interlocked.Exchange(ref leagueWindow, value.ToInt64()); }
 
-    public void SetBindings(IEnumerable<Entry> list) => entries = list.Where(e => e.Binding.IsSet).ToArray();
+    public void SetBindings(IEnumerable<Entry> list)
+    {
+        entries = list.Where(e => e.Binding.IsSet).ToArray();
+        UpdateMouseNeed();
+    }
 
     /// <summary>The next key/mouse-button combo goes to <paramref name="callback"/> (on the UI thread) instead of triggering anything.</summary>
-    public void BeginCapture(Action<HotkeyBinding> callback) => capture = callback;
-    public void CancelCapture() => capture = null;
+    public void BeginCapture(Action<HotkeyBinding> callback)
+    {
+        capture = callback;
+        UpdateMouseNeed();
+    }
+
+    public void CancelCapture()
+    {
+        capture = null;
+        UpdateMouseNeed();
+    }
+
+    // The mouse hook sees every mouse movement system-wide, so it's only installed while a
+    // shortcut uses a mouse button (or a new shortcut is being recorded).
+    const int WM_APP_MOUSEHOOK = 0x8001;
+    volatile bool wantMouse;
+
+    void UpdateMouseNeed()
+    {
+        bool want = capture != null || entries.Any(e => e.Binding.Vk is 4 or 5 or 6);
+        if (want == wantMouse) return;
+        wantMouse = want;
+        if (threadId != 0) Native.PostThreadMessage(threadId, WM_APP_MOUSEHOOK, IntPtr.Zero, IntPtr.Zero);
+    }
+
+    void ApplyMouseHook()
+    {
+        if (wantMouse && mouseHook == IntPtr.Zero)
+            mouseHook = Native.SetWindowsHookEx(Native.WH_MOUSE_LL, mouseProc, Native.GetModuleHandle(null), 0);
+        else if (!wantMouse && mouseHook != IntPtr.Zero)
+        {
+            Native.UnhookWindowsHookEx(mouseHook);
+            mouseHook = IntPtr.Zero;
+        }
+    }
+
+    public bool MouseHookInstalled => mouseHook != IntPtr.Zero;
 
     public void Start()
     {
@@ -219,10 +265,11 @@ public sealed class InputHook : IDisposable
         threadId = Native.GetCurrentThreadId();
         var mod = Native.GetModuleHandle(null);
         kbHook = Native.SetWindowsHookEx(Native.WH_KEYBOARD_LL, kbProc, mod, 0);
-        mouseHook = Native.SetWindowsHookEx(Native.WH_MOUSE_LL, mouseProc, mod, 0);
+        ApplyMouseHook();
         Installed = kbHook != IntPtr.Zero;
         ready.Set();
-        while (Native.GetMessage(out _, IntPtr.Zero, 0, 0) > 0) { }
+        while (Native.GetMessage(out var msg, IntPtr.Zero, 0, 0) > 0)
+            if (msg.message == WM_APP_MOUSEHOOK) ApplyMouseHook();
         if (kbHook != IntPtr.Zero) Native.UnhookWindowsHookEx(kbHook);
         if (mouseHook != IntPtr.Zero) Native.UnhookWindowsHookEx(mouseHook);
     }
@@ -316,7 +363,7 @@ public sealed class InputHook : IDisposable
         {
             if (!e.Binding.SameCombo(combo)) continue;
             var scope = e.Binding.EffectiveScope;
-            if (e.Id == "holdDraw" && scope == HotkeyScope.Drawing) scope = HotkeyScope.League; // must work before drawing starts
+            if (e.Id is "holdDraw" or "wheel" && scope == HotkeyScope.Drawing) scope = HotkeyScope.League; // must work before drawing starts
             bool active = scope switch
             {
                 HotkeyScope.Everywhere => !editingText || e.Binding.Ctrl || e.Binding.Alt,

@@ -39,8 +39,18 @@ public sealed class TrayIcon : IDisposable
         icon.MouseClick += (_, e) => { if (e.Button == WinForms.MouseButtons.Left) toggleToolbar(); };
     }
 
-    /// <summary>A small pen-on-circle icon drawn at runtime.</summary>
+    /// <summary>The app's own icon (from the exe), falling back to a drawn one.</summary>
     static System.Drawing.Icon MakeIcon()
+    {
+        try
+        {
+            if (Environment.ProcessPath is { } exe && System.Drawing.Icon.ExtractAssociatedIcon(exe) is { } own) return own;
+        }
+        catch { }
+        return DrawIcon();
+    }
+
+    static System.Drawing.Icon DrawIcon()
     {
         using var bmp = new System.Drawing.Bitmap(32, 32);
         using (var g = System.Drawing.Graphics.FromImage(bmp))
@@ -60,6 +70,43 @@ public sealed class TrayIcon : IDisposable
         icon.Visible = false;
         icon.Dispose();
     }
+}
+
+/// <summary>RiftPen's entry in the Start menu (current user only).</summary>
+public static class StartMenu
+{
+    static string LinkPath => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.Programs), "RiftPen.lnk");
+
+    public static bool Exists => File.Exists(LinkPath);
+
+    /// <summary>Creates or refreshes the shortcut so it points at this exe.</summary>
+    public static void Create()
+    {
+        var exe = Environment.ProcessPath ?? throw new InvalidOperationException("Unknown exe path");
+        var shellType = Type.GetTypeFromProgID("WScript.Shell") ?? throw new InvalidOperationException("Windows Script Host isn't available");
+        dynamic shell = Activator.CreateInstance(shellType)!;
+        try
+        {
+            dynamic link = shell.CreateShortcut(LinkPath);
+            link.TargetPath = exe;
+            link.WorkingDirectory = Path.GetDirectoryName(exe);
+            link.IconLocation = exe + ",0";
+            link.Description = "RiftPen: draw on your screen and on the League of Legends map";
+            link.Save();
+            Marshal.FinalReleaseComObject(link);
+        }
+        finally { Marshal.FinalReleaseComObject(shell); }
+    }
+
+    public static void Remove()
+    {
+        if (File.Exists(LinkPath)) File.Delete(LinkPath);
+    }
+
+    /// <summary>A dev build in bin\ shouldn't put itself in the Start menu.</summary>
+    public static bool IsDevBuild =>
+        Environment.ProcessPath?.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase) == true;
 }
 
 /// <summary>"Start with Windows" via the current user's Run key.</summary>

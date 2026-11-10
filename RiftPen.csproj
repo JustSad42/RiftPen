@@ -9,12 +9,17 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>RiftPen.ico</ApplicationIcon>
     <AssemblyName>RiftPen</AssemblyName>
     <RootNamespace>RiftPen</RootNamespace>
     <Version>1.2.0</Version>
     <!-- DPI is handled by WPF via app.manifest; WinForms is only used for the tray icon. -->
     <NoWarn>$(NoWarn);WFO0003</NoWarn>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Resource Include="RiftPen.ico" />
+  </ItemGroup>
 
   <ItemGroup>
     <!-- Keep WinForms/GDI+ names from clashing with WPF ones; they're used fully qualified. -->

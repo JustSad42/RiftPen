@@ -19,6 +19,9 @@ public sealed class ItemDto
     public string? Replay { get; set; }
     public double? T0 { get; set; }
     public double? T1 { get; set; }
+    public float[]? Pr { get; set; }
+    public string? Note { get; set; }
+    public bool Follow { get; set; }
 }
 
 /// <summary>Autosave of all drawings, plus reusable "boards" (saved layouts).</summary>
@@ -42,7 +45,7 @@ public static class Persistence
     {
         Kind = it.Kind, Space = it.Space, Color = it.Color.ToString(), Thickness = it.Thickness, Marker = it.Marker,
         Text = it.Text, Radius = it.Radius, P = it.Points.SelectMany(p => new[] { p.X, p.Y }).ToArray(),
-        Replay = it.ReplayKey, T0 = it.TimeStart, T1 = it.TimeEnd,
+        Replay = it.ReplayKey, T0 = it.TimeStart, T1 = it.TimeEnd, Pr = it.Pressure?.ToArray(), Note = it.Note, Follow = it.Follow,
     };
 
     public static DrawItem FromDto(ItemDto d)
@@ -53,9 +56,10 @@ public static class Persistence
         var it = new DrawItem
         {
             Kind = d.Kind, Space = d.Space, Color = c, Thickness = d.Thickness, Marker = d.Marker, Text = d.Text, Radius = d.Radius,
-            ReplayKey = d.Replay, TimeStart = d.T0, TimeEnd = d.T1,
+            ReplayKey = d.Replay, TimeStart = d.T0, TimeEnd = d.T1, Note = d.Note, Follow = d.Follow,
         };
         for (int i = 0; i + 1 < d.P.Length; i += 2) it.Points.Add(new Point(d.P[i], d.P[i + 1]));
+        if (d.Pr != null && d.Pr.Length == it.Points.Count) it.Pressure = d.Pr.ToList();
         return it;
     }
 

@@ -37,6 +37,7 @@ public partial class SettingsWindow : Window
 
         if (S.HotkeyFailures.Count > 0) HotkeyWarn.Text = string.Join("\n", S.HotkeyFailures);
         StartupBox.IsChecked = Startup.IsEnabled;
+        StartMenuBox.IsChecked = StartMenu.Exists;
         BuildShortcuts();
 
         timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(150) };
@@ -385,6 +386,20 @@ public partial class SettingsWindow : Window
         StartupBox.IsChecked = Startup.IsEnabled;
     }
 
+    void StartMenu_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (StartMenuBox.IsChecked == true) StartMenu.Create();
+            else StartMenu.Remove();
+            S.Settings.StartMenuShortcutDone = true; // the user decided; don't re-add it on next start
+        }
+        catch (Exception ex) { MessageBox.Show(this, "Couldn't change the Start menu entry: " + ex.Message, "RiftPen"); }
+        StartMenuBox.IsChecked = StartMenu.Exists;
+    }
+
+    void DetectMinimap_Click(object sender, RoutedEventArgs e) => S.RequestUi("detectMinimap");
+
     void BrowseShots_Click(object sender, RoutedEventArgs e)
     {
         var dlg = new Microsoft.Win32.OpenFolderDialog { Title = "Where should screenshots go?" };
@@ -400,6 +415,15 @@ public partial class SettingsWindow : Window
     {
         Directory.CreateDirectory(S.Settings.ScreenshotFolder);
         Process.Start(new ProcessStartInfo("explorer.exe", $"\"{S.Settings.ScreenshotFolder}\"") { UseShellExecute = true });
+    }
+
+    void AutoCollapse_Click(object sender, RoutedEventArgs e) => toolbar.ApplyCollapseSetting();
+    void OpenNotes_Click(object sender, RoutedEventArgs e) => toolbar.OpenNotes();
+
+    void ResetStrip_Click(object sender, RoutedEventArgs e)
+    {
+        overlay.Timeline?.ResetPosition();
+        S.Settings.Save();
     }
 
     void NextMonitor_Click(object sender, RoutedEventArgs e)

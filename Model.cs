@@ -4,7 +4,7 @@ using System.Windows.Media;
 namespace RiftPen;
 
 // New members go at the end: saved drawings store these as numbers.
-public enum ToolKind { Pen, Highlighter, Eraser, Line, Arrow, Rectangle, Ellipse, Text, Marker, Range, Laser, Select }
+public enum ToolKind { Pen, Highlighter, Eraser, Line, Arrow, Rectangle, Ellipse, Text, Marker, Range, Laser, Select, Ping }
 
 /// <summary>Where an item's points live: fixed screen position, or a spot on the League map's ground.</summary>
 public enum Space { Screen, World }
@@ -39,12 +39,22 @@ public sealed class DrawItem
     public double? TimeStart { get; set; }
     public double? TimeEnd { get; set; }
 
+    /// <summary>Pen-tablet pressure (0–1) per point, or null for mouse strokes.</summary>
+    public List<float>? Pressure { get; set; }
+
+    /// <summary>Range circles that move with whichever champion the replay camera is locked onto.</summary>
+    public bool Follow { get; set; }
+
+    /// <summary>Optional title shown in the replay notes list.</summary>
+    public string? Note { get; set; }
+
     public DrawItem Clone()
     {
         var c = new DrawItem
         {
             Kind = Kind, Space = Space, Color = Color, Thickness = Thickness, Marker = Marker, Text = Text, Radius = Radius,
-            ReplayKey = ReplayKey, TimeStart = TimeStart, TimeEnd = TimeEnd,
+            ReplayKey = ReplayKey, TimeStart = TimeStart, TimeEnd = TimeEnd, Note = Note, Follow = Follow,
+            Pressure = Pressure == null ? null : new List<float>(Pressure),
         };
         c.Points.AddRange(Points);
         return c;
@@ -58,5 +68,6 @@ public sealed class DrawItem
         Radius = o.Radius;
         Points.Clear();
         Points.AddRange(o.Points);
+        Pressure = o.Pressure == null ? null : new List<float>(o.Pressure);
     }
 }

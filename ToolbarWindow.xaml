@@ -45,17 +45,27 @@
                         <Ellipse Width="3" Height="3" Fill="White"/>
                     </Grid>
                 </ToggleButton>
+                <ToggleButton Tag="Ping">
+                    <Grid Width="20" Height="20">
+                        <Ellipse Width="18" Height="18" Stroke="#EEEEEE" StrokeThickness="1.5"/>
+                        <Ellipse Width="10" Height="10" Stroke="#99EEEEEE" StrokeThickness="1.2"/>
+                        <Ellipse Width="4" Height="4" Fill="#EEEEEE"/>
+                    </Grid>
+                </ToggleButton>
                 <ToggleButton Tag="Eraser" Content="&#xE75C;"/>
-                <ToggleButton Tag="Line">
-                    <TextBlock Text="╱" FontFamily="Segoe UI Symbol" FontSize="16"/>
+                <!-- Line / arrow / rectangle / circle share one button that remembers the last one -->
+                <ToggleButton x:Name="ShapeBtn" Click="ShapeBtn_Click" Padding="6,0">
+                    <StackPanel Orientation="Horizontal">
+                        <ContentControl x:Name="ShapeIcon" Focusable="False"/>
+                        <TextBlock Text="&#xE70D;" FontSize="8" Margin="3,0,0,0" VerticalAlignment="Center" Foreground="#AAFFFFFF"/>
+                    </StackPanel>
                 </ToggleButton>
-                <ToggleButton Tag="Arrow" Content="&#xE72A;"/>
-                <ToggleButton Tag="Rectangle">
-                    <Rectangle Width="16" Height="12" Margin="0" Fill="Transparent" Stroke="#EEEEEE" StrokeThickness="1.6" RadiusX="1" RadiusY="1"/>
-                </ToggleButton>
-                <ToggleButton Tag="Ellipse">
-                    <Ellipse Width="16" Height="16" Stroke="#EEEEEE" StrokeThickness="1.6"/>
-                </ToggleButton>
+                <Popup x:Name="ShapePopup" PlacementTarget="{Binding ElementName=ShapeBtn}" Placement="Bottom"
+                       StaysOpen="False" AllowsTransparency="True">
+                    <Border Style="{StaticResource PopupBorder}">
+                        <StackPanel x:Name="ShapeList" MinWidth="170"/>
+                    </Border>
+                </Popup>
                 <ToggleButton Tag="Text" Content="&#xE8D2;"/>
                 <ToggleButton x:Name="MarkerBtn" Tag="Marker">
                     <local:MarkerIcon x:Name="MarkerPreview" Width="22" Height="22"/>
@@ -123,6 +133,11 @@
                 <Button x:Name="RedoBtn" Content="&#xE7A6;" Click="Redo_Click"/>
                 <Button x:Name="ClearBtn" Content="&#xE74D;" Click="Clear_Click"/>
                 <ToggleButton x:Name="HideBtn" Content="&#xE7B3;" Click="Hide_Click"/>
+                <ToggleButton x:Name="SpotBtn" Click="Spot_Click">
+                    <Border Width="20" Height="16" CornerRadius="3" Background="#66000000" BorderBrush="#AAEEEEEE" BorderThickness="1">
+                        <Ellipse Width="9" Height="9" Fill="#FFF2F2F2"/>
+                    </Border>
+                </ToggleButton>
                 <Button x:Name="BoardsBtn" Content="&#xE8B7;" Click="Boards_Click"/>
                 <Popup x:Name="BoardsPopup" PlacementTarget="{Binding ElementName=BoardsBtn}" Placement="Bottom"
                        StaysOpen="False" AllowsTransparency="True">

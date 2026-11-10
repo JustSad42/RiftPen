@@ -65,6 +65,12 @@ internal static class SelfTest
         var cam2 = cam with { Position = new Vec3(7900, 2300, 6300) };
         RenderTo(Path.Combine(folder, "selftest_cam1.png"), cam, viewport);
         RenderTo(Path.Combine(folder, "selftest_cam2.png"), cam2, viewport);
+        S.RunAction("wheel", true);
+        RenderTo(Path.Combine(folder, "selftest_wheel.png"), cam, viewport);
+        S.RunAction("wheel", false);
+        S.RunAction("cheatsheet", true);
+        RenderTo(Path.Combine(folder, "selftest_cheatsheet.png"), cam, viewport);
+        S.RunAction("cheatsheet", false);
 
         // Undo/redo/clear.
         int n = S.Items.Count;
@@ -81,7 +87,7 @@ internal static class SelfTest
         S.RunAction("tool:Arrow", true); bool toolOk = S.Tool == ToolKind.Arrow && S.DrawMode;
         S.RunAction("range:xp", true); bool rangeOk = S.Tool == ToolKind.Range && S.CurrentRange?.Radius == 1400;
         S.RunAction("color:3", true); bool colorOk = S.Color == AppState.Palette[3];
-        S.RunAction("toggleDraw", true); bool toggleOk = !S.DrawMode;
+        S.RunAction("toggleDraw", true); S.RunAction("toggleDraw", false); bool toggleOk = !S.DrawMode; // tap = press + quick release
         log.AppendLine($"Hold to draw {P(holdOn && holdOff)}, tool {P(toolOk)}, range preset {P(rangeOk)}, color {P(colorOk)}, toggle {P(toggleOk)}");
         log.AppendLine($"Key names: {HotkeyBinding.Of(System.Windows.Input.Key.Oem3).Display}, {new HotkeyBinding { Vk = 6, Ctrl = true }.Display}, {HotkeyBinding.Of(System.Windows.Input.Key.D1, shift: true).Display}");
 
@@ -116,6 +122,73 @@ internal static class SelfTest
         log.AppendLine($"Legacy shortcut scope -> {legacy.EffectiveScope} {P(legacy.EffectiveScope == HotkeyScope.Everywhere)}");
         log.AppendLine($"Draw toggle default scope: {HotkeyCatalog.BuiltIn.First(a => a.Id == "toggleDraw").Default.EffectiveScope}");
 
+        // Stroke simplification: a straight line collapses to its ends; corners survive.
+        var straight = Enumerable.Range(0, 100).Select(i => new Point(i * 3, i * 1.5)).ToList();
+        var zigzag = Enumerable.Range(0, 9).Select(i => new Point(i * 20, i % 2 == 0 ? 0 : 20)).ToList();
+        int keptStraight = DrawCanvas.Rdp(straight, 0.5).Count, keptZig = DrawCanvas.Rdp(zigzag, 0.5).Count;
+        log.AppendLine($"Simplify straight 100→{keptStraight} {P(keptStraight == 2)}, zigzag 9→{keptZig} {P(keptZig == 9)}");
+
+        // Each tool remembers its own colour.
+        S.Selected = null;
+        S.Tool = ToolKind.Pen;
+        S.Color = AppState.Palette[5];
+        S.Tool = ToolKind.Laser;
+        var laserColor = S.Color;
+        S.Tool = ToolKind.Pen;
+        log.AppendLine($"Per-tool colour: pen keeps blue {P(S.Color == AppState.Palette[5])}, laser differs {P(laserColor != AppState.Palette[5])}");
+        log.AppendLine($"Last shape remembered: {S.LastShape}");
+
+        // Context index only holds drawings that can show now (no replay open: no replay notes).
+        S.AddItem(new DrawItem { Kind = ToolKind.Pen, Space = Space.Screen, Color = Colors.White, Thickness = 2, ReplayKey = "999.9", TimeStart = 1, Points = { new Point(1, 1) } });
+        bool ctxOk = S.ContextItems.All(i => i.ReplayKey == null) && S.Items.Any(i => i.ReplayKey == "999.9");
+        log.AppendLine($"Context index excludes other replays' notes {P(ctxOk)}");
+
+        // Minimap detection on synthetic screenshots: a 300px square in the bottom-right changes,
+        // plus a small decoration above it and a few stray pixels.
+        {
+            int w = 1600, h = 600, side = 300, x0 = w - side - 10, y0 = h - side - 6;
+            var a = new byte[w * h * 4];
+            var b = new byte[w * h * 4];
+            var rnd = new Random(1);
+            rnd.NextBytes(a);
+            Array.Copy(a, b, a.Length);
+            for (int y = 0; y < h; y++)
+                for (int x = 0; x < w; x++)
+                {
+                    bool inMap = x >= x0 && x < x0 + side && y >= y0 && y < y0 + side;
+                    bool decoration = x >= x0 + 40 && x < x0 + 120 && y >= y0 - 30 && y < y0;
+                    if (inMap || decoration) { int i = (y * w + x) * 4; b[i] = (byte)(a[i] ^ 0xFF); b[i + 1] = (byte)(a[i + 1] ^ 0xFF); b[i + 2] = (byte)(a[i + 2] ^ 0xFF); }
+                }
+            for (int k = 0; k < 300; k++) { int i = rnd.Next(w * h) * 4; b[i] ^= 0xFF; }
+            var found = MinimapDetect.ChangedSquare(a, b, w, h, onLeft: false);
+            bool ok = found is var (fx, fy, fs) && Math.Abs(fx - x0) <= 2 && Math.Abs(fy - y0) <= 2 && Math.Abs(fs - side) <= 3;
+            log.AppendLine($"Minimap detection (synthetic): {(found is var (gx, gy, gs) ? $"{gs}px at {gx},{gy}" : "none")} {P(ok)}");
+        }
+        log.AppendLine($"League HUD signature: {MinimapDetect.HudSignature(S.Settings.GameCfgPath) ?? "(game.cfg not readable)"}");
+
+        // Follow circles jump to the view centre (the locked champion) when the camera is attached.
+        {
+            var follow = new DrawItem { Kind = ToolKind.Range, Space = Space.World, Color = Colors.Yellow, Thickness = 3, Radius = 1350, Follow = true, Points = { new Point(100, 100) } };
+            S.AddItem(follow);
+            var fc = new DrawCanvas();
+            fc.Measure(viewport.Size);
+            fc.Arrange(viewport);
+            fc.Frame(cam with { Attached = false }, viewport, true);
+            bool staysWhenFree = follow.Points[0] == new Point(100, 100);
+            fc.Frame(cam with { Attached = true }, viewport, true);
+            var lookP = new Projector();
+            lookP.Update(cam, viewport, S.Settings.Calibration);
+            lookP.TryLookAt(out var look);
+            bool follows = (follow.Points[0] - look).Length < 0.01;
+            log.AppendLine($"Follow circle: waits while camera free {P(staysWhenFree)}, jumps to locked champion {P(follows)}");
+            S.RemoveItems(new[] { follow });
+        }
+
+        // Spotlight + ping render.
+        S.Spotlight = true;
+        RenderTo(Path.Combine(folder, "selftest_spotlight.png"), cam, viewport, c => { c.PingAtCursor(); });
+        S.Spotlight = false;
+
         // Prediction pushes the camera along its motion.
         var api = new ReplayApiClient();
         log.AppendLine($"Predict with no camera returns null: {P(api.Predict(10) == null)}");
@@ -137,10 +210,11 @@ internal static class SelfTest
         S.AddItem(new DrawItem { Kind = ToolKind.Marker, Space = Space.Screen, Marker = MarkerKind.Ward, Thickness = 8, Points = { new Point(760, 520) } });
     }
 
-    static void RenderTo(string file, CameraState cam, Rect viewport)
+    static void RenderTo(string file, CameraState cam, Rect viewport, Action<DrawCanvas>? setup = null)
     {
         var canvas = new DrawCanvas();
         canvas.Frame(cam, viewport, visible: true);
+        setup?.Invoke(canvas);
         canvas.Measure(viewport.Size);
         canvas.Arrange(viewport);
         canvas.UpdateLayout();

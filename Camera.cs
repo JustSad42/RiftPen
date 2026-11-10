@@ -13,7 +13,7 @@ public readonly record struct Vec3(double X, double Y, double Z)
 }
 
 /// <summary>One reading of the replay camera from Riot's Replay API.</summary>
-public sealed record CameraState(Vec3 Position, double RotX, double RotY, double RotZ, double Fov, string Mode)
+public sealed record CameraState(Vec3 Position, double RotX, double RotY, double RotZ, double Fov, string Mode, bool Attached = false)
 {
     public static bool SameView(CameraState? a, CameraState? b)
     {
@@ -83,6 +83,10 @@ public sealed class Projector
         p = new Point(vp.X + (nx + 1) * 0.5 * vp.Width, vp.Y + (1 - ny) * 0.5 * vp.Height);
         return true;
     }
+
+    /// <summary>The ground point at the centre of the view: the champion, when the camera is locked onto one.</summary>
+    public bool TryLookAt(out Point world) =>
+        TryUnproject(new Point(vp.X + vp.Width / 2, vp.Y + vp.Height / 2), out world);
 
     /// <summary>Overlay pixel to map ground point (X = world X, Y = world Z).</summary>
     public bool TryUnproject(Point p, out Point world)

@@ -68,6 +68,12 @@ internal static class Native
     public static extern IntPtr GetForegroundWindow();
 
     [DllImport("user32.dll")]
+    public static extern bool GetCursorPos(out POINT point);
+
+    [DllImport("user32.dll")]
+    public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+
+    [DllImport("user32.dll")]
     public static extern bool SetForegroundWindow(IntPtr hWnd);
 
     [DllImport("user32.dll")]

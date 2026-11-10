@@ -109,6 +109,11 @@
                         <TextBlock x:Name="DurationText" Grid.Column="2" VerticalAlignment="Center" Margin="8,0,0,0"/>
                     </Grid>
                     <CheckBox Content="Pause the replay while I'm drawing (resumes when I stop)" IsChecked="{Binding PauseWhileDrawing}" Margin="0,8,0,3"/>
+                    <CheckBox Content="Show the notes timeline strip over the replay (click a dot to jump to that note)" IsChecked="{Binding ShowNotesTimeline}"/>
+                    <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                        <Button Content="Open notes list" Click="OpenNotes_Click" Margin="0,0,8,0"/>
+                        <Button Content="Reset timeline strip position" Click="ResetStrip_Click"/>
+                    </StackPanel>
                     <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
                         <Button Content="Delete this replay's notes" Click="DeleteThisReplay_Click" Margin="0,0,8,0"/>
                         <Button Content="Delete notes for all replays" Click="DeleteAllReplays_Click"/>
@@ -117,11 +122,13 @@
                     <Separator Margin="0,12"/>
                     <TextBlock Text="Minimap" Style="{StaticResource H}"/>
                     <TextBlock Style="{StaticResource Note}"
-                               Text="Mark where the minimap is once (per HUD layout). Then map drawings also show on the minimap, and you can draw on the minimap to place drawings anywhere on the map."/>
+                               Text="RiftPen finds the minimap by itself when a replay opens: it pauses for a split second, hides the minimap through the Replay API, and sees what changed. It does this again whenever you change minimap size, minimap side, HUD scale or resolution in League. Map drawings then also show on the minimap, and you can draw on the minimap to place drawings anywhere on the map."/>
                     <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
-                        <Button Content="Set minimap area…" Click="PickMinimap_Click" Margin="0,0,10,0"/>
+                        <Button Content="Find minimap now" Click="DetectMinimap_Click" Margin="0,0,8,0"/>
+                        <Button Content="Set it by hand…" Click="PickMinimap_Click" Margin="0,0,10,0"/>
                         <TextBlock x:Name="MinimapStatus" VerticalAlignment="Center" Foreground="#555"/>
                     </StackPanel>
+                    <CheckBox Content="Find the minimap automatically" IsChecked="{Binding AutoDetectMinimap}"/>
                     <CheckBox Content="Show map drawings on the minimap" IsChecked="{Binding MirrorToMinimap}"/>
                     <CheckBox Content="Drawing on the minimap places drawings on the map" IsChecked="{Binding MinimapInput}"/>
 
@@ -203,6 +210,7 @@
                 <StackPanel Margin="10">
                     <TextBlock Text="Startup" Style="{StaticResource H}"/>
                     <CheckBox x:Name="StartupBox" Content="Start RiftPen with Windows" Click="Startup_Click"/>
+                    <CheckBox x:Name="StartMenuBox" Content="Show RiftPen in the Start menu" Click="StartMenu_Click"/>
                     <CheckBox Content="Bring back my drawings when RiftPen starts" IsChecked="{Binding RestoreDrawings}"/>
                     <TextBlock Style="{StaticResource Note}" Margin="22,0,0,4"
                                Text="RiftPen lives in the notification area (system tray) too: left-click its icon to show or hide the toolbar, right-click for more."/>
@@ -220,7 +228,30 @@
                                 Value="{Binding LaserSeconds}"/>
                         <TextBlock Grid.Column="2" Text="{Binding Value, ElementName=LaserSlider, StringFormat={}{0:0.0}}" VerticalAlignment="Center" Margin="8,0,0,0"/>
                     </Grid>
+                    <Grid Margin="0,4,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="170"/>
+                            <ColumnDefinition/>
+                            <ColumnDefinition Width="60"/>
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition/>
+                            <RowDefinition/>
+                        </Grid.RowDefinitions>
+                        <TextBlock Text="Spotlight size" VerticalAlignment="Center"/>
+                        <Slider x:Name="SpotSizeSlider" Grid.Column="1" Minimum="80" Maximum="600" Margin="0,4" IsSnapToTickEnabled="True" TickFrequency="10"
+                                Value="{Binding SpotlightRadius}"/>
+                        <TextBlock Grid.Column="2" Text="{Binding Value, ElementName=SpotSizeSlider, StringFormat={}{0:0}}" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                        <TextBlock Grid.Row="1" Text="Spotlight darkness" VerticalAlignment="Center"/>
+                        <Slider x:Name="SpotDimSlider" Grid.Row="1" Grid.Column="1" Minimum="0.2" Maximum="0.9" Margin="0,4" IsSnapToTickEnabled="True" TickFrequency="0.05"
+                                Value="{Binding SpotlightDim}"/>
+                        <TextBlock Grid.Row="1" Grid.Column="2" Text="{Binding Value, ElementName=SpotDimSlider, StringFormat={}{0:P0}}" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                    </Grid>
                     <CheckBox Content="Hide map drawings when League isn't the focused window" IsChecked="{Binding HideWorldWhenLeagueNotFocused}"/>
+                    <CheckBox Content="Hold the draw-mode key to open the tool wheel (a quick tap still turns drawing on/off)" IsChecked="{Binding WheelOnHold}"/>
+                    <CheckBox Content="Collapse the toolbar when I'm not drawing" IsChecked="{Binding AutoCollapseToolbar}" Click="AutoCollapse_Click"/>
+                    <CheckBox Content="Smooth freehand strokes" IsChecked="{Binding SmoothStrokes}"/>
+                    <CheckBox Content="Use pen pressure on drawing tablets" IsChecked="{Binding PenPressure}"/>
 
                     <Separator Margin="0,10"/>
                     <TextBlock Text="Screenshots" Style="{StaticResource H}"/>

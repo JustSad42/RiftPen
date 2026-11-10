@@ -2,7 +2,15 @@
 
 An Epic Pen-style screen drawing tool for League of Legends. In **replays and spectator mode**, drawings stick to the map and to the replay timeline. Pan, zoom or scrub, and a circle around Baron stays around Baron and shows up again whenever you rewatch that moment.
 
-Run `publish\RiftPen.exe`. It needs the .NET 10 Desktop Runtime, which is already installed on this PC. RiftPen also sits in the notification area: left-click the tray icon to show or hide the toolbar, right-click for Settings, Start with Windows and Quit.
+Run `publish\RiftPen.exe`, or **RiftPen** from the Start menu (added on first run; you can turn this off in Settings → General). It needs the .NET 10 Desktop Runtime, which is already installed on this PC. RiftPen also sits in the notification area: left-click the tray icon to show or hide the toolbar, right-click for Settings, Start with Windows and Quit.
+
+## Quickest way to use it
+
+- **Tap `` ~ ` ``** to turn drawing on or off while League is focused.
+- **Hold `` ~ ` ``** to open the **tool wheel** at your cursor. Slide over a color (inner ring), then over a tool (outer ring), and let go. You never need to reach for the toolbar.
+- **Hold `F1`** while drawing to see all your shortcuts on screen.
+- The toolbar collapses to just the Draw button when you're not drawing and expands when you start.
+- Each tool remembers its own color and size. The laser stays red and the highlighter yellow, for example.
 
 ## The toolbar
 
@@ -10,8 +18,10 @@ Run `publish\RiftPen.exe`. It needs the .NET 10 Desktop Runtime, which is alread
 |---|---|
 | **✎ Draw** | Draw mode on/off. When off, clicks go through to the game. |
 | Select | Click a drawing, then drag to move it, scroll to resize it, or pick a color to recolor it. |
-| Pen, highlighter, **laser**, eraser | The laser fades after a moment, which suits streams and quick "look here" moments. |
-| Line, arrow, rectangle, circle, text | Shift snaps lines to 45° and makes squares. On the map, circles are drawn from the center outward. |
+| Pen, highlighter, **laser**, **ping**, eraser | The laser fades after a moment. Ping makes a League-style ripple where you click. A "Ping at cursor" shortcut does the same without turning on drawing. |
+| Spotlight | Dims everything except a soft circle around your cursor (`Ctrl+Alt+S` in League). Size and darkness are in Settings → General. |
+| Shapes ▾ | Line, arrow, rectangle and circle share one button that remembers the last one used. Shift snaps lines to 45° and makes squares. On the map, circles grow from the center. |
+| Text | Click, type, press Enter. |
 | Markers | Ward, control ward, danger, missing, on my way, target, objective, team dots. |
 | Range circles | Vision, XP, tower, summoner spells, plus **champion abilities** from Riot's Data Dragon. |
 | Color dot ▾ | Dropdown with colors and size. |
@@ -27,7 +37,10 @@ Run `publish\RiftPen.exe`. It needs the .NET 10 Desktop Runtime, which is alread
 - **Timeline notes:** while a replay is open, each drawing remembers the moment you made it. It appears when the replay reaches that moment and fades out after 20 s (adjustable, or "until the end"). This works when rewinding and rewatching. Notes are saved per replay automatically.
 - **Auto-pause:** turning on draw mode pauses the replay, and turning it off resumes it.
 - **Replay control while drawing:** Space plays/pauses, ← → skip 5 s, ↑ ↓ change speed, and Shift+← → jump to the previous or next note.
-- **Minimap:** in Settings → Replay → *Set minimap area…*, drag a box around your minimap once. After that, map drawings also appear on the minimap, and drawing on the minimap places drawings on the map.
+- **Notes timeline strip:** a thin bar over the replay shows a dot for every note. Click a dot to jump to it, or click anywhere on the bar to seek. Drag the `⋮` grip to move the bar.
+- **Notes list** (`N` while drawing, or the list icon on the strip): every note in this replay with its time. Jump to a note, give it a title, delete it, or **copy the whole list as text** for Discord or a doc.
+- **Circles that follow a champion:** in the range menu, tick *Follow the camera-locked champion* (or press `F` while drawing). Lock the replay camera onto a champion, then click anywhere to attach the circle. It moves with whoever the camera is locked onto and fades out ("lock the camera to follow") while the camera is free.
+- **Minimap (automatic):** when a replay opens, RiftPen finds the minimap by itself. It pauses for a split second, hides the minimap through the Replay API and sees what changed. It does this again whenever you change minimap size, minimap side, HUD scale or resolution in League. Map drawings then also appear on the minimap, and drawing on the minimap places drawings on the map. *Find minimap now* and *Set it by hand…* are in Settings → Replay.
 
 ## Shortcuts
 
@@ -49,6 +62,10 @@ Shortcuts work in-game through a low-level keyboard/mouse hook, the same method 
 
 RiftPen uses only Riot's official Replay API (`https://127.0.0.1:2999`) for the camera, clock and playback control. It never reads or writes game memory. That API only runs in replays and spectator mode, so in your own live games RiftPen works as a normal screen pen.
 
+## Performance
+
+When nothing is happening, RiftPen checks in only 4 times a second (about 0.5% of one CPU core). It switches to redrawing at your monitor's refresh rate the moment the camera moves or you draw, and drops back about 1.5 s after things go still. Camera polling also slows from about 250 to about 30 checks a second when the camera is still. The mouse hook is only installed while a shortcut actually uses a mouse button. Drawings that stay fixed on screen are drawn once and reused, and pen strokes are simplified and smoothed when you finish them. On a drawing tablet, line width follows pen pressure (can be turned off in Settings → General).
+
 ## Files
 
 - Settings: `%APPDATA%\RiftPen\settings.json`
@@ -64,6 +81,9 @@ RiftPen uses only Riot's official Replay API (`https://127.0.0.1:2999`) for the 
 - If the overlay ever shows a solid background, turn off Fast rendering in Settings → General.
 
 ## Building
+
+The project is a git repository (branch `main`), so every change can be reviewed and rolled back.
+
 
 ```
 dotnet build -c Release
