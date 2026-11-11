@@ -6,6 +6,78 @@ using System.Windows.Media;
 namespace RiftPen;
 
 /// <summary>
+/// One lane matchup over the whole game: blue laner minus red laner for gold, CS or XP, from Riot's per-minute
+/// timeline. The line shows who was ahead when; click to move the board (and replay) there.
+/// </summary>
+public sealed class MatchupGraph : FrameworkElement
+{
+    static readonly Color BlueTeam = Color.FromRgb(0, 153, 224), RedTeam = Color.FromRgb(232, 61, 61);
+    static readonly Typeface Face = new("Segoe UI");
+    readonly RiftSession R = RiftSession.I;
+
+    public int BlueId { get; set; }
+    public int RedId { get; set; }
+    public Func<ParticipantFrame, double> Metric { get; set; } = f => f.TotalGold;
+    public string Unit { get; set; } = "gold";
+    public Func<double>? TimeSource { get; set; }
+    public event Action<double>? Seek;
+
+    public MatchupGraph()
+    {
+        Height = 92;
+        Cursor = Cursors.Hand;
+        ToolTip = "Click to jump to that moment";
+    }
+
+    double Length => R.Game?.Length ?? 0;
+
+    protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e)
+    {
+        if (Length <= 0) return;
+        Seek?.Invoke(Math.Clamp(e.GetPosition(this).X / Math.Max(1, ActualWidth) * Length, 0, Length));
+        e.Handled = true;
+    }
+
+    protected override void OnRender(DrawingContext dc)
+    {
+        var size = RenderSize;
+        dc.DrawRoundedRectangle(new SolidColorBrush(Color.FromRgb(28, 31, 38)), null, new Rect(size), 6, 6);
+        var g = R.Game;
+        if (g == null || g.Frames.Count < 2 || Length <= 0) return;
+        double ppd = VisualTreeHelper.GetDpi(this).PixelsPerDip;
+        double X(double t) => t / Length * size.Width;
+        double mid = size.Height / 2;
+
+        var pts = g.Frames.Select(f => (f.Time, D: R.StatAt(BlueId, f.Time, Metric) - R.StatAt(RedId, f.Time, Metric))).ToList();
+        double max = Math.Max(Unit == "gold" ? 1000 : Unit == "CS" ? 20 : 500, pts.Max(p => Math.Abs(p.D)));
+        double Y(double d) => mid - d / max * (mid - 8);
+
+        dc.DrawLine(new Pen(new SolidColorBrush(Color.FromArgb(70, 255, 255, 255)), 1), new Point(0, mid), new Point(size.Width, mid));
+        foreach (var (team, sign) in new[] { (BlueTeam, 1), (RedTeam, -1) })
+        {
+            var geo = new StreamGeometry();
+            using (var ctx = geo.Open())
+            {
+                ctx.BeginFigure(new Point(X(pts[0].Time), mid), true, true);
+                foreach (var (t, d) in pts) ctx.LineTo(new Point(X(t), Y(sign > 0 ? Math.Max(0, d) : Math.Min(0, d))), true, true);
+                ctx.LineTo(new Point(X(pts[^1].Time), mid), true, true);
+            }
+            geo.Freeze();
+            dc.DrawGeometry(new SolidColorBrush(Color.FromArgb(130, team.R, team.G, team.B)), null, geo);
+        }
+
+        double now = TimeSource?.Invoke() ?? 0;
+        double dNow = R.StatAt(BlueId, now, Metric) - R.StatAt(RedId, now, Metric);
+        dc.DrawLine(new Pen(Brushes.White, 1.5), new Point(X(now), 0), new Point(X(now), size.Height));
+        dc.DrawEllipse(dNow >= 0 ? new SolidColorBrush(BlueTeam) : new SolidColorBrush(RedTeam), new Pen(Brushes.White, 1.5), new Point(X(now), Y(dNow)), 4, 4);
+
+        var label = new FormattedText($"±{(Unit == "gold" ? $"{max / 1000:0.#}k" : $"{max:0}")} {Unit}", CultureInfo.InvariantCulture, FlowDirection.LeftToRight, Face, 10,
+            new SolidColorBrush(Color.FromArgb(130, 255, 255, 255)), ppd);
+        dc.DrawText(label, new Point(5, 3));
+    }
+}
+
+/// <summary>
 /// The Rift Board's timeline: team gold difference over the game, kills and objectives as ticks, the stretches
 /// where positions were recorded from the minimap, and a playhead you drag to move through the game.
 /// </summary>

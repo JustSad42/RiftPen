@@ -184,6 +184,51 @@ internal static class SelfTest
             S.RemoveItems(new[] { follow });
         }
 
+        // Objective timers follow the spawn rules.
+        {
+            var g = new GameTimeline { Participants = { new GameParticipant { Id = 1, Team = 100 }, new GameParticipant { Id = 6, Team = 200 } } };
+            ObjectiveTimer Get(double t, string kind) => Objectives.At(g, t).First(o => o.Kind == kind);
+            bool firstDrake = Math.Abs(Get(200, "dragon").SpawnsIn - 100) < 0.01 && Get(301, "dragon").Up;
+            bool grubsFirst = Math.Abs(Get(100, "grubs").SpawnsIn - 380) < 0.01;
+            foreach (var at in new[] { 400.0, 800, 1200, 1600 })
+                g.Events.Add(new GameEvent { Type = "ELITE_MONSTER_KILL", MonsterType = "DRAGON", MonsterSubType = "FIRE_DRAGON", KillerId = 1, Time = at });
+            bool respawn = Math.Abs(Get(500, "dragon").SpawnsIn - 200) < 0.01 && Get(500, "dragon").Name == "Drake";
+            bool elder = Get(1700, "dragon").Name == "Elder Dragon" && Math.Abs(Get(1700, "dragon").SpawnsIn - 260) < 0.01;
+            bool baron = Objectives.At(g, 1100).Any(o => o.Kind == "herald") && Math.Abs(Get(1190, "baron").SpawnsIn - 10) < 0.01 && Get(1250, "baron").Up;
+            g.Events.Add(new GameEvent { Type = "ELITE_MONSTER_KILL", MonsterType = "BARON_NASHOR", KillerId = 6, Time = 1300 });
+            bool baronRespawn = Math.Abs(Get(1400, "baron").SpawnsIn - 260) < 0.01;
+            log.AppendLine($"Objective timers: first drake {P(firstDrake)}, grubs {P(grubsFirst)}, drake respawn {P(respawn)}, Elder after soul {P(elder)}, Baron {P(baron)}, Baron respawn {P(baronRespawn)}");
+        }
+
+        // "Hide from stream capture": a guarded window vanishes from screen captures, and comes back when switched off.
+        {
+            bool before = S.Settings.HideUiFromCapture;
+            var probe = new Window
+            {
+                WindowStyle = WindowStyle.None, AllowsTransparency = true, Background = new SolidColorBrush(Color.FromRgb(255, 0, 255)),
+                Width = 160, Height = 160, Left = 40, Top = 40, Topmost = true, ShowInTaskbar = false, ShowActivated = false,
+            };
+            CaptureGuard.Guard(probe);
+            probe.Show();
+            bool Magenta()
+            {
+                probe.UpdateLayout();
+                System.Windows.Threading.Dispatcher.CurrentDispatcher.Invoke(() => { }, System.Windows.Threading.DispatcherPriority.Render);
+                Thread.Sleep(250);
+                Native.GetWindowRect(new System.Windows.Interop.WindowInteropHelper(probe).Handle, out var r);
+                var mid = new Native.RECT { Left = r.Left + r.Width / 2 - 2, Top = r.Top + r.Height / 2 - 2, Right = r.Left + r.Width / 2 + 2, Bottom = r.Top + r.Height / 2 + 2 };
+                var px = Screenshot.CaptureBgra(mid, includeOverlays: true);
+                return px != null && px[2] > 200 && px[1] < 60 && px[0] > 200;
+            }
+            S.Settings.HideUiFromCapture = false; CaptureGuard.Refresh();
+            bool shownWhenOff = Magenta();
+            S.Settings.HideUiFromCapture = true; CaptureGuard.Refresh();
+            bool hiddenWhenOn = !Magenta();
+            S.Settings.HideUiFromCapture = before; CaptureGuard.Refresh();
+            probe.Close();
+            log.AppendLine($"Hide from stream capture: captured when off {P(shownWhenOff)}, left out when on {P(hiddenWhenOn)}");
+        }
+
         // Choices from last time survive a save and reload.
         {
             var saved = new AppSettings { LastTool = nameof(ToolKind.Arrow), LastSpaceMode = nameof(SpaceMode.Map), BoardTrails = false, BoardLinked = false,
@@ -380,6 +425,73 @@ internal static class SelfTest
         File.WriteAllText(Path.Combine(folder, "tracktest.txt"), log.ToString());
     }
 
+    /// <summary>`--board-test-offline <folder>`: the Rift Board on the most recent saved game, no replay needed.</summary>
+    public static async Task RunBoardTestOffline(string folder)
+    {
+        Directory.CreateDirectory(folder);
+        var log = new StringBuilder();
+        AppState.I.AutosaveEnabled = false;
+        var file = new DirectoryInfo(GameLoader.CacheFolder).GetFiles("*.json").OrderByDescending(f => f.LastWriteTime).FirstOrDefault();
+        if (file == null) { File.WriteAllText(Path.Combine(folder, "boardtest.txt"), "No saved games."); return; }
+        var game = System.Text.Json.JsonSerializer.Deserialize<GameTimeline>(await File.ReadAllTextAsync(file.FullName))!;
+        var R = RiftSession.I;
+        R.TestLoad(game);
+        log.AppendLine($"Game {game.Key}: {R.Tracks?.SampleCount} recorded positions");
+        log.AppendLine($"Recorded stretches: {string.Join(", ", (R.Tracks?.Coverage() ?? new()).Where(c => c.End - c.Start > 5).Select(c => $"{AppState.FormatTime(c.Start)}–{AppState.FormatTime(c.End)}"))}");
+        RiftBoardWindow.Open();
+        var w = RiftBoardWindow.Instance!;
+        var spans = (R.Tracks?.Coverage() ?? new()).Where(c => c.End - c.Start > 30).ToList();
+        double at = spans.Count > 0 ? spans.OrderByDescending(c => c.End - c.Start).First().End - 2 : 900;
+        log.AppendLine($"Showing {AppState.FormatTime(at)}");
+        foreach (var o in Objectives.At(game, at)) log.AppendLine($"  timer: {o.Name} {(o.Up ? "up" : Objectives.Clock(o.SpawnsIn))}");
+
+        w.TestSandbox(at);
+        w.TestSelect(null);
+        w.TestPaths(BoardPathMode.Path, 120, "TOP");
+        await Task.Delay(1200);
+        w.Snapshot(Path.Combine(folder, "board_paths_all.png"));
+        w.TestPaths(BoardPathMode.Heatmap, 0, "MIDDLE");
+        await Task.Delay(800);
+        w.Snapshot(Path.Combine(folder, "board_heatmap.png"));
+        w.TestSelect(game.Participants[1].Id);
+        w.TestPaths(BoardPathMode.Path, 300, "JUNGLE");
+        await Task.Delay(800);
+        w.Snapshot(Path.Combine(folder, "board_path_jungler.png"));
+        w.TestPaths(BoardPathMode.Path, 300, "TOP");
+        await Task.Delay(500);
+        w.SnapshotSide(Path.Combine(folder, "board_side.png"));
+        w.TestPaths(BoardPathMode.Off, 120, "TOP");
+
+        // Drawings that follow champions, and ward vision.
+        var S = AppState.I;
+        var jungler = game.Participants[1];
+        var top = game.Participants[0];
+        var added = new List<DrawItem>
+        {
+            new() { Kind = ToolKind.Marker, Space = Space.World, Marker = MarkerKind.Ward, Thickness = 4, Points = { new Point(4500, 7400) } },
+            new() { Kind = ToolKind.Marker, Space = Space.World, Marker = MarkerKind.ControlWard, Thickness = 4, Points = { new Point(9800, 6400) } },
+            new() { Kind = ToolKind.Range, Space = Space.World, Color = Colors.Yellow, Thickness = 3, Radius = 1350, Text = "Champion vision 1350", FollowKey = jungler.ChampionKey, Points = { new Point(0, 0) } },
+            new() { Kind = ToolKind.Arrow, Space = Space.World, Color = Colors.Cyan, Thickness = 6, FollowKey = top.ChampionKey, Points = { new Point(0, 0), new Point(7400, 7400) } },
+        };
+        foreach (var it in added) S.AddItem(it);
+        w.TestSelect(null);
+        w.TestSandbox(at - 20);
+        await Task.Delay(800);
+        w.Snapshot(Path.Combine(folder, "board_follow_a.png"));
+        var circleA = added[2].Points[0];
+        w.TestSandbox(at);
+        await Task.Delay(800);
+        w.Snapshot(Path.Combine(folder, "board_follow_b.png"));
+        var circleB = added[2].Points[0];
+        var truth = R.StateAt(jungler, at).Pos;
+        log.AppendLine($"Circle on {jungler.ChampionName}: moved {(circleB - circleA).Length:0} units in 20 s, sits {(circleB - truth).Length:0} units from them");
+        log.AppendLine($"Arrow starts on {top.ChampionName}: {(added[3].Points[0] - R.StateAt(top, at).Pos).Length:0} units off");
+        S.RemoveItems(added);
+
+        w.Close();
+        File.WriteAllText(Path.Combine(folder, "boardtest.txt"), log.ToString());
+    }
+
     /// <summary>`--board-test <folder>`: open the Rift Board on the open replay, play a bit, and save screenshots of it.</summary>
     public static async Task RunBoardTest(string folder)
     {
@@ -416,6 +528,18 @@ internal static class SelfTest
         w.TestSelect(R.Game.Participants[0].Id);
         await Task.Delay(800);
         w.Snapshot(Path.Combine(folder, "board_linked.png"));
+
+        // Paths, heatmap and lane matchup.
+        w.TestSelect(null);
+        w.TestPaths(BoardPathMode.Heatmap, 0, "MIDDLE");
+        await Task.Delay(800);
+        w.Snapshot(Path.Combine(folder, "board_heatmap.png"));
+        w.TestSelect(R.Game.Participants[1].Id);
+        w.TestPaths(BoardPathMode.Path, 300, "JUNGLE");
+        await Task.Delay(800);
+        w.Snapshot(Path.Combine(folder, "board_path.png"));
+        log.AppendLine($"Recorded stretches available for paths: {string.Join(", ", (R.Tracks?.Coverage() ?? new()).Where(c => c.End - c.Start > 5).Select(c => $"{AppState.FormatTime(c.Start)}–{AppState.FormatTime(c.End)}"))}");
+        w.TestPaths(BoardPathMode.Off, 120, "TOP");
 
         // Sandbox: jump ahead without moving the replay, drag a champion.
         w.TestSandbox(1250);

@@ -745,6 +745,19 @@ public sealed class GameTracks
         }
     }
 
+    /// <summary>Recorded positions of one champion between two moments, oldest first.</summary>
+    public List<(double T, Point P)> Samples(int id, double from, double to)
+    {
+        var result = new List<(double, Point)>();
+        lock (gate)
+        {
+            if (!byId.TryGetValue(id, out var list)) return result;
+            for (int i = Lower(list, from); i < list.Count && list[i].T <= to; i++)
+                result.Add((list[i].T, new Point(list[i].X, list[i].Y)));
+        }
+        return result;
+    }
+
     public enum Fix { None, Seen, Held }
 
     /// <summary>
@@ -776,6 +789,16 @@ public sealed class GameTracks
                     p = new Point(x.X + (y.X - x.X) * k, x.Y + (y.Y - x.Y) * k);
                     return Fix.Held;
                 }
+            }
+            // Just past the newest reading (the replay's live moment): carry on along the last movement for a
+            // fraction of a second, so things following the champion don't trail behind.
+            if (before is Sample l2 && after == null && t - l2.T <= 0.6 && i >= 2 && list[i - 2] is var l1 && l2.T - l1.T is > 0.05 and <= 1.5)
+            {
+                double vx = (l2.X - l1.X) / (l2.T - l1.T), vy = (l2.Y - l1.Y) / (l2.T - l1.T);
+                double speed = Math.Sqrt(vx * vx + vy * vy);
+                if (speed > ChampionTracker.MaxRunSpeed) { vx *= ChampionTracker.MaxRunSpeed / speed; vy *= ChampionTracker.MaxRunSpeed / speed; }
+                p = new Point(l2.X + vx * (t - l2.T), l2.Y + vy * (t - l2.T));
+                return Fix.Held;
             }
             if (before is Sample l && t - l.T <= 8) { p = new Point(l.X, l.Y); return Fix.Held; }
             if (after is Sample n && n.T - t <= 1.5) { p = new Point(n.X, n.Y); return Fix.Held; }

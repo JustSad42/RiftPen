@@ -105,6 +105,15 @@ public sealed class AppSettings
     public bool BoardTrails { get; set; } = true;
     /// <summary>Board moves with the replay (off = sandbox).</summary>
     public bool BoardLinked { get; set; } = true;
+    public bool BoardTimers { get; set; } = true;
+    /// <summary>Off, Path or Heatmap (see BoardPathMode).</summary>
+    public string BoardPathMode { get; set; } = "Off";
+    /// <summary>How far back paths/heatmaps look, in seconds; 0 = whole game so far.</summary>
+    public double BoardPathWindow { get; set; } = 120;
+    public string BoardMatchupLane { get; set; } = "TOP";
+    public string BoardMatchupMetric { get; set; } = "Gold";
+    /// <summary>Open the board on a screen League isn't on, so it never covers the minimap.</summary>
+    public bool BoardAvoidLeagueScreen { get; set; } = true;
     public double BoardZoom { get; set; } = 1;
     /// <summary>World point (X, Z) at the centre of the board view.</summary>
     public double[]? BoardCenter { get; set; }
@@ -113,6 +122,12 @@ public sealed class AppSettings
     // Notes timeline strip: centre x and top y as fractions of the League window.
     public bool ShowNotesTimeline { get; set; } = true;
     public double[] TimelineStripPos { get; set; } = { 0.5, 0.09 };
+
+    /// <summary>Keep RiftPen's toolbar, notes bar, menus and settings out of OBS/Discord capture (drawings still show).</summary>
+    public bool HideUiFromCapture { get; set; }
+
+    /// <summary>Ward and control ward markers on the map show the area they'd reveal (900 units).</summary>
+    public bool WardVision { get; set; } = true;
 
     // Screenshots
     public string ScreenshotFolder { get; set; } =

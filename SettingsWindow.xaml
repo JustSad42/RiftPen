@@ -250,6 +250,8 @@
                     <CheckBox Content="Hide map drawings when League isn't the focused window" IsChecked="{Binding HideWorldWhenLeagueNotFocused}"/>
                     <CheckBox Content="Hold the draw-mode key to open the tool wheel (a quick tap still turns drawing on/off)" IsChecked="{Binding WheelOnHold}"/>
                     <CheckBox Content="Collapse the toolbar when I'm not drawing" IsChecked="{Binding AutoCollapseToolbar}" Click="AutoCollapse_Click"/>
+                    <CheckBox Content="Hide RiftPen from stream capture (OBS/Discord show your drawings, not the toolbar, notes bar or menus)" IsChecked="{Binding HideUiFromCapture}" Click="HideFromCapture_Click"/>
+                    <CheckBox Content="Ward markers on the map show their vision range (900 units)" IsChecked="{Binding WardVision}" Click="WardVision_Click"/>
                     <CheckBox Content="Smooth freehand strokes" IsChecked="{Binding SmoothStrokes}"/>
                     <CheckBox Content="Use pen pressure on drawing tablets" IsChecked="{Binding PenPressure}"/>
 

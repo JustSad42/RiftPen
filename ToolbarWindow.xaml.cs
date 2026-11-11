@@ -169,11 +169,11 @@ public partial class ToolbarWindow : Window
         });
         followRow.Children.Add(new TextBlock
         {
-            Text = "Follow the camera-locked champion" + (S.BindingFor("rangeFollow") is { } fk ? $"   [{fk.Display}]" : ""),
+            Text = "Follow champions (click one, or lock the camera)" + (S.BindingFor("rangeFollow") is { } fk ? $"   [{fk.Display}]" : ""),
             FontFamily = new FontFamily("Segoe UI"), FontSize = 13, VerticalAlignment = VerticalAlignment.Center,
         });
         var follow = MenuButton(followRow);
-        follow.ToolTip = "On: lock the replay camera onto a champion, then click anywhere to attach the circle to them.\nOff: circles stay where you click.";
+        follow.ToolTip = "On: click a champion to attach the circle to them (positions come from the Rift Board's minimap tracking),\nor lock the replay camera onto one and click anywhere. Arrows drawn from a champion keep starting from them too.\nOff: circles and arrows stay where you put them.";
         follow.Click += (_, _) => { S.RunAction("rangeFollow", true); BuildRangeList(); };
         RangeList.Children.Add(follow);
         RangeList.Children.Add(MenuSeparator());
@@ -459,6 +459,7 @@ public partial class ToolbarWindow : Window
         if (settings is not { IsLoaded: true })
         {
             settings = new SettingsWindow(overlay, this);
+            CaptureGuard.Guard(settings);
             settings.Closed += (_, _) => settings = null;
         }
         settings.Show();
@@ -474,6 +475,7 @@ public partial class ToolbarWindow : Window
         if (champions is not { IsLoaded: true })
         {
             champions = new ChampionRangesWindow();
+            CaptureGuard.Guard(champions);
             champions.Closed += (_, _) => champions = null;
             champions.Show();
         }
@@ -487,6 +489,7 @@ public partial class ToolbarWindow : Window
         if (notes is not { IsLoaded: true })
         {
             notes = new NotesWindow();
+            CaptureGuard.Guard(notes);
             notes.Closed += (_, _) => notes = null;
             notes.Show();
         }

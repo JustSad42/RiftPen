@@ -26,6 +26,20 @@ public partial class App : Application
             return;
         }
 
+        if (e.Args.Length >= 2 && e.Args[0] == "--board-test-offline")
+        {
+            selfTest = true;
+            var folder = e.Args[1];
+            ShutdownMode = ShutdownMode.OnExplicitShutdown;
+            _ = Dispatcher.InvokeAsync(async () =>
+            {
+                try { await SelfTest.RunBoardTestOffline(folder); }
+                catch (Exception ex) { System.IO.File.WriteAllText(System.IO.Path.Combine(folder, "boardtest_crash.txt"), ex.ToString()); }
+                Shutdown();
+            });
+            return;
+        }
+
         if (e.Args.Length >= 2 && e.Args[0] == "--board-test")
         {
             selfTest = true;
@@ -96,6 +110,8 @@ public partial class App : Application
         toolbar.Show();
 
         var timeline = new TimelineWindow { Owner = overlay };
+        CaptureGuard.Guard(toolbar);
+        CaptureGuard.Guard(timeline);
         timeline.OpenNotesRequested += toolbar.OpenNotes;
         overlay.Timeline = timeline;
 
@@ -117,7 +133,9 @@ public partial class App : Application
             toggleToolbar: toolbar.ToggleVisible,
             toggleDraw: () => S.DrawMode = !S.DrawMode,
             openSettings: () => toolbar.OpenSettings(0),
-            quit: Shutdown);
+            quit: Shutdown,
+            toggleCapture: () => S.RunAction("hideFromCapture", true),
+            captureHidden: () => S.Settings.HideUiFromCapture);
 
         // First run of the real app: add RiftPen to the Start menu (keeps it pointing here if the exe moved).
         if (!e.Args.Contains("--demo") && !StartMenu.IsDevBuild && (!S.Settings.StartMenuShortcutDone || StartMenu.Exists))

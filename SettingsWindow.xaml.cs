@@ -417,6 +417,10 @@ public partial class SettingsWindow : Window
         Process.Start(new ProcessStartInfo("explorer.exe", $"\"{S.Settings.ScreenshotFolder}\"") { UseShellExecute = true });
     }
 
+    void WardVision_Click(object sender, RoutedEventArgs e) { S.NotifyChanged(); }
+
+    void HideFromCapture_Click(object sender, RoutedEventArgs e) { CaptureGuard.Refresh(); S.SaveSettingsSoon(); }
+
     void AutoCollapse_Click(object sender, RoutedEventArgs e) => toolbar.ApplyCollapseSetting();
     void OpenNotes_Click(object sender, RoutedEventArgs e) => toolbar.OpenNotes();
 

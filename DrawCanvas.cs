@@ -169,16 +169,68 @@ public sealed class DrawCanvas : FrameworkElement
         if (followLocked && Projector.TryLookAt(out var lookAt))
             foreach (var it in S.ContextItems)
                 if (it.Follow && it.Points.Count > 0 && it.Points[0] != lookAt) it.Points[0] = lookAt;
+        // …and drawings attached to a champion move with that champion's tracked position.
+        bool followersMoved = timeChanged && UpdateFollowers(t);
 
         bool statusExpired = status != null && DateTime.Now > statusUntil;
         if (statusExpired) status = null;
 
-        bool redraw = force || visChanged || statusExpired || timedActive || lasersActive ||
+        bool redraw = force || visChanged || statusExpired || timedActive || lasersActive || (followersMoved && visible) ||
                       (camChanged && visible && HasWorldContent());
         force = false;
         if (redraw) InvalidateVisual();
         return redraw;
     }
+
+    // ---------------------------------------------------------------- following a champion
+
+    /// <summary>The moment drawings are shown at: the board's moment on the Rift Board, the replay's otherwise.</summary>
+    double? ShownTime => Board != null ? Board.Time : S.ReplayTime;
+
+    /// <summary>
+    /// The champion drawn at (or right next to) a point, from the Rift Board's minimap tracking. Only champions
+    /// whose position is actually known (not estimated or dead) count.
+    /// </summary>
+    bool ChampionAt(Point screen, out string key, out Point world)
+    {
+        key = "";
+        world = default;
+        var R = RiftSession.I;
+        if (R.Game == null || ShownTime is not double t) return false;
+        double best = Board != null ? 32 : 75;
+        bool found = false;
+        foreach (var p in R.Game.Participants)
+        {
+            var st = R.StateAt(p, t);
+            if (st.Dead || st.Quality == PosQuality.Estimated || !MapPoint(st.Pos, out var s)) continue;
+            double d = (s - screen).Length;
+            if (d < best) { best = d; key = p.ChampionKey; world = st.Pos; found = true; }
+        }
+        return found;
+    }
+
+    /// <summary>Moves drawings attached to champions to where those champions are at <paramref name="t"/>. True if any did.</summary>
+    bool UpdateFollowers(double? t)
+    {
+        var R = RiftSession.I;
+        if (t is not double now || R.Game is not { } g) return false;
+        bool any = false;
+        void Move(DrawItem it)
+        {
+            if (it.FollowKey == null || it.Points.Count == 0) return;
+            var p = g.Participants.FirstOrDefault(x => x.ChampionKey == it.FollowKey);
+            if (p == null) return;
+            var st = R.StateAt(p, now);
+            if (st.Dead) return; // stays where they died until they're back
+            any = true;
+            it.Points[0] = st.Pos;
+        }
+        foreach (var it in S.ContextItems) Move(it);
+        if (current != null) Move(current);
+        return any;
+    }
+
+    string ChampionName(string key) => RiftSession.I.Game?.Participants.FirstOrDefault(p => p.ChampionKey == key)?.ChampionName ?? key;
 
     bool HasWorldContent() =>
         S.Settings.ShowGrid || current?.Space == Space.World || S.ContextItems.Any(i => i.Space == Space.World) ||
@@ -288,15 +340,23 @@ public sealed class DrawCanvas : FrameworkElement
             var preset = S.CurrentRange;
             if (preset == null) { Flash("No range circles yet. Add some in Settings → Range circles."); return; }
             if (!CanUseMap) { Flash("Range circles go on the map: open a replay with the Replay API on."); return; }
-            bool follow = Board == null && S.Settings.RangeFollow;
+            bool follow = S.Settings.RangeFollow;
+            string? followKey = null;
             Point centre;
-            if (follow)
+            if (follow && ChampionAt(p, out var champ, out var champPos))
             {
-                if (!followLocked || !Projector.TryLookAt(out centre))
-                {
-                    Flash("Lock the camera onto a champion first (select them and lock the camera), or turn off Follow in the range menu.");
-                    return;
-                }
+                // Clicked on a champion: the circle stays on them.
+                followKey = champ;
+                centre = champPos;
+                follow = false;
+            }
+            else if (follow && Board == null && followLocked && Projector.TryLookAt(out centre)) { /* camera-locked champion */ }
+            else if (follow)
+            {
+                Flash(RiftSession.I.Game == null
+                    ? "To follow a champion, open the Rift Board's replay tracking (it needs the minimap visible), or lock the camera onto one."
+                    : "Click on a champion to attach the circle to them" + (Board == null ? ", or lock the camera onto one." : "."));
+                return;
             }
             else if (!ToWorld(p, out centre))
             {
@@ -305,7 +365,7 @@ public sealed class DrawCanvas : FrameworkElement
             }
             current = new DrawItem
             {
-                Kind = ToolKind.Range, Space = Space.World, Color = ParseColor(preset.Color), Thickness = 3, Follow = follow,
+                Kind = ToolKind.Range, Space = Space.World, Color = ParseColor(preset.Color), Thickness = 3, Follow = follow, FollowKey = followKey,
                 Radius = preset.Radius, Text = $"{preset.Name} {preset.Radius:0}", Points = { centre },
             };
             CaptureMouse();
@@ -333,6 +393,12 @@ public sealed class DrawCanvas : FrameworkElement
 
         // Map rectangles get their 4 ground corners on the first mouse move.
         if (!(S.Tool == ToolKind.Rectangle && space == Space.World)) item.Points.Add(stored);
+        // An arrow drawn from a champion (with Follow on) keeps starting from them as they move.
+        if (item.Kind == ToolKind.Arrow && space == Space.World && S.Settings.RangeFollow && ChampionAt(p, out var from, out var fromPos))
+        {
+            item.FollowKey = from;
+            item.Points[0] = fromPos;
+        }
         if (IsFreehand(item.Kind) && S.Settings.PenPressure && PressureOf(e) is float pressure)
             item.Pressure = new List<float> { pressure };
         current = item;
@@ -738,6 +804,7 @@ public sealed class DrawCanvas : FrameworkElement
     {
         if (InputOn) dc.DrawRectangle(HitBrush, null, new Rect(RenderSize));
         if (S.Hidden) return;
+        UpdateFollowers(Board!.Time);
         foreach (var it in S.ContextItems)
         {
             if (it.Space != Space.World || !ShownAt(it, out double alpha)) continue;
@@ -882,9 +949,11 @@ public sealed class DrawCanvas : FrameworkElement
         {
             bool old = viaMinimap;
             viaMinimap = OnMinimap(h);
-            bool follow = Board == null && S.Settings.RangeFollow;
+            bool follow = S.Settings.RangeFollow;
             Point w = default;
-            bool ok = follow ? followLocked && Projector.TryLookAt(out w) : ToWorld(h, out w);
+            bool ok = follow
+                ? ChampionAt(h, out _, out w) || (Board == null && followLocked && Projector.TryLookAt(out w))
+                : ToWorld(h, out w);
             if (ok)
             {
                 var ghost = new DrawItem { Kind = ToolKind.Range, Space = Space.World, Color = ParseColor(preset.Color), Thickness = 2,
@@ -898,6 +967,7 @@ public sealed class DrawCanvas : FrameworkElement
         else if (S.Tool == ToolKind.Marker)
         {
             dc.PushOpacity(0.5);
+            if (CanUseMap && S.SpaceMode != SpaceMode.Screen && ToWorld(h, out var wardAt)) DrawWardVision(dc, S.Marker, wardAt);
             MarkerRenderer.Draw(dc, S.Marker, h, 22 + S.Thickness * 1.5, Ppd);
             dc.Pop();
         }
@@ -1149,6 +1219,7 @@ public sealed class DrawCanvas : FrameworkElement
                 if (!minimapPass && TryScreen(it, it.Points[0], out var ta)) DrawText(dc, it.Text ?? "", ta, it.Color, FontSizeFor(it.Thickness));
                 return;
             case ToolKind.Marker:
+                if (it.Space == Space.World) DrawWardVision(dc, it.Marker, it.Points[0]);
                 if (TryScreen(it, it.Points[0], out var ma)) MarkerRenderer.Draw(dc, it.Marker, ma, minimapPass ? 12 : MarkerSize(it), Ppd);
                 return;
             case ToolKind.Range:
@@ -1242,6 +1313,32 @@ public sealed class DrawCanvas : FrameworkElement
         }
     }
 
+    /// <summary>Vision radius of a ward marker in game units (stealth and control wards both see 900), or 0.</summary>
+    static double WardVisionRadius(MarkerKind k) => k is MarkerKind.Ward or MarkerKind.ControlWard ? 900 : 0;
+
+    /// <summary>The area a ward marker would reveal, drawn on the ground around it.</summary>
+    void DrawWardVision(DrawingContext dc, MarkerKind kind, Point world)
+    {
+        double radius = WardVisionRadius(kind);
+        if (radius <= 0 || !S.Settings.WardVision) return;
+        var c = kind == MarkerKind.ControlWard ? Color.FromRgb(255, 79, 163) : Color.FromRgb(255, 214, 10);
+        var runs = ProjectRuns(Ring(world, radius, radius, 96));
+        if (runs.Count == 1 && runs[0].Count > 90 && !minimapPass)
+        {
+            var g = new StreamGeometry();
+            using (var ctx = g.Open())
+            {
+                ctx.BeginFigure(runs[0][0], true, true);
+                ctx.PolyLineTo(runs[0].Skip(1).ToList(), true, true);
+            }
+            g.Freeze();
+            dc.DrawGeometry(BrushOf(Color.FromArgb(34, c.R, c.G, c.B)), null, g);
+        }
+        var pen = PenOf(Color.FromArgb(200, c.R, c.G, c.B), minimapPass ? 1 : 2);
+        foreach (var run in runs)
+            if (run.Count > 1) dc.DrawGeometry(null, pen, Polyline(run));
+    }
+
     /// <summary>A ground circle like League's own range indicators: soft fill, solid edge, label on top.</summary>
     void RenderRange(DrawingContext dc, DrawItem it)
     {
@@ -1279,7 +1376,7 @@ public sealed class DrawCanvas : FrameworkElement
         if (minimapPass) return;
         if (MapPoint(c, out var mid)) dc.DrawEllipse(edge, null, mid, 3, 3);
         if (S.Settings.ShowRangeLabels && !string.IsNullOrEmpty(it.Text) && MapPoint(new Point(c.X, c.Y + it.Radius), out var top))
-            Label(dc, it.Follow ? $"{it.Text}  ·  {(waiting ? "lock the camera to follow" : "following")}" : it.Text!, top, 12);
+            Label(dc, it.FollowKey != null ? $"{it.Text}  ·  on {ChampionName(it.FollowKey)}" : it.Follow ? $"{it.Text}  ·  {(waiting ? "lock the camera to follow" : "following")}" : it.Text!, top, 12);
     }
 
     /// <summary>Map drawings repeated, small, on the minimap.</summary>

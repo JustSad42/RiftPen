@@ -14,7 +14,7 @@ public sealed class TrayIcon : IDisposable
     readonly WinForms.NotifyIcon icon;
     readonly WinForms.ToolStripMenuItem startup;
 
-    public TrayIcon(Action toggleToolbar, Action toggleDraw, Action openSettings, Action quit)
+    public TrayIcon(Action toggleToolbar, Action toggleDraw, Action openSettings, Action quit, Action? toggleCapture = null, Func<bool>? captureHidden = null)
     {
         startup = new WinForms.ToolStripMenuItem("Start with Windows") { CheckOnClick = true, Checked = Startup.IsEnabled };
         startup.Click += (_, _) => Startup.Set(startup.Checked);
@@ -23,11 +23,14 @@ public sealed class TrayIcon : IDisposable
         menu.Items.Add("Show / hide toolbar", null, (_, _) => toggleToolbar());
         menu.Items.Add("Draw mode on/off", null, (_, _) => toggleDraw());
         menu.Items.Add("Settings…", null, (_, _) => openSettings());
+        var capture = new WinForms.ToolStripMenuItem("Hide RiftPen from stream capture") { ToolTipText = "OBS and Discord show your drawings but not the toolbar, notes bar or menus" };
+        capture.Click += (_, _) => toggleCapture?.Invoke();
+        if (toggleCapture != null) menu.Items.Add(capture);
         menu.Items.Add(new WinForms.ToolStripSeparator());
         menu.Items.Add(startup);
         menu.Items.Add(new WinForms.ToolStripSeparator());
         menu.Items.Add("Quit RiftPen", null, (_, _) => quit());
-        menu.Opening += (_, _) => startup.Checked = Startup.IsEnabled;
+        menu.Opening += (_, _) => { startup.Checked = Startup.IsEnabled; capture.Checked = captureHidden?.Invoke() == true; };
 
         icon = new WinForms.NotifyIcon
         {

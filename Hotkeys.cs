@@ -159,6 +159,7 @@ public static class HotkeyCatalog
             new("timeline", "Timeline notes on/off", "Replay", HotkeyBinding.None()),
             new("notes", "Notes list for this replay", "Replay", HotkeyBinding.Of(Key.N)),
             new("notesBar", "Show / hide the replay notes bar", "Replay", HotkeyBinding.Of(Key.N, HotkeyScope.League, ctrl: true, shift: true)),
+            new("hideFromCapture", "Hide RiftPen's toolbar and menus from stream capture (on/off)", "General", HotkeyBinding.Of(Key.C, HotkeyScope.Everywhere, ctrl: true, alt: true)),
             new("board", "Rift Board (big map of the whole game)", "Replay", HotkeyBinding.Of(Key.B)),
         };
         for (int i = 0; i < 10; i++)

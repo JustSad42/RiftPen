@@ -444,8 +444,8 @@ public sealed class AppState
             case "rangeFollow":
                 Settings.RangeFollow = !Settings.RangeFollow;
                 Say(Settings.RangeFollow
-                    ? "Range circles now follow the champion the camera is locked onto."
-                    : "Range circles now stay where you place them.");
+                    ? "Follow on: click a champion to attach circles (and arrows drawn from them), or lock the camera onto one."
+                    : "Follow off: circles and arrows stay where you put them.");
                 Raise();
                 return;
             case "screenshot":
@@ -454,6 +454,14 @@ public sealed class AppState
             case "board":
             case "ping":
                 UiRequest?.Invoke(id);
+                return;
+            case "hideFromCapture":
+                Settings.HideUiFromCapture = !Settings.HideUiFromCapture;
+                CaptureGuard.Refresh();
+                Say(Settings.HideUiFromCapture
+                    ? "Hidden from stream capture: OBS and Discord show your drawings but not RiftPen's toolbar or menus."
+                    : "RiftPen's toolbar and menus show in stream capture again.");
+                Raise();
                 return;
             case "notesBar":
                 Settings.ShowNotesTimeline = !Settings.ShowNotesTimeline;

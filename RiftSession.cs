@@ -55,6 +55,16 @@ public sealed class RiftSession
         Live.Dispose();
     }
 
+    /// <summary>Self-test only: show a saved game and its recorded positions without a replay open.</summary>
+    internal void TestLoad(GameTimeline game)
+    {
+        Tracks = GameTracks.Load(game.Key);
+        BuildKeyframes(game);
+        Game = game;
+        Status = "";
+        Raise();
+    }
+
     volatile bool reload;
 
     /// <summary>Loads the game data again (e.g. after entering a Riot API key).</summary>
@@ -373,6 +383,24 @@ public sealed class RiftSession
                 return Diff(frames[i - 1]) + (Diff(frames[i]) - Diff(frames[i - 1])) * k;
             }
         return Diff(frames[^1]);
+    }
+
+    /// <summary>One of a participant's numbers (gold, CS, XP…) at <paramref name="t"/>, interpolated between timeline minutes.</summary>
+    public double StatAt(int id, double t, Func<ParticipantFrame, double> pick)
+    {
+        if (Game == null || Game.Frames.Count == 0) return 0;
+        GameFrame? a = null, b = null;
+        foreach (var f in Game.Frames)
+        {
+            if (!f.Participants.ContainsKey(id)) continue;
+            if (f.Time <= t) a = f;
+            else { b = f; break; }
+        }
+        if (a == null) return b != null ? pick(b.Participants[id]) * Math.Clamp(t / Math.Max(1, b.Time), 0, 1) : 0;
+        if (b == null) return pick(a.Participants[id]);
+        double k = (t - a.Time) / Math.Max(1, b.Time - a.Time);
+        double va = pick(a.Participants[id]), vb = pick(b.Participants[id]);
+        return va + (vb - va) * k;
     }
 
     /// <summary>A participant's numbers from the timeline frame just before <paramref name="t"/>.</summary>

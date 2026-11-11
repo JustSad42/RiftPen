@@ -45,6 +45,9 @@ public sealed class DrawItem
     /// <summary>Range circles that move with whichever champion the replay camera is locked onto.</summary>
     public bool Follow { get; set; }
 
+    /// <summary>Attached to this champion (by key): a range circle's centre, or an arrow's start, moves with them.</summary>
+    public string? FollowKey { get; set; }
+
     /// <summary>Optional title shown in the replay notes list.</summary>
     public string? Note { get; set; }
 
@@ -53,7 +56,7 @@ public sealed class DrawItem
         var c = new DrawItem
         {
             Kind = Kind, Space = Space, Color = Color, Thickness = Thickness, Marker = Marker, Text = Text, Radius = Radius,
-            ReplayKey = ReplayKey, TimeStart = TimeStart, TimeEnd = TimeEnd, Note = Note, Follow = Follow,
+            ReplayKey = ReplayKey, TimeStart = TimeStart, TimeEnd = TimeEnd, Note = Note, Follow = Follow, FollowKey = FollowKey,
             Pressure = Pressure == null ? null : new List<float>(Pressure),
         };
         c.Points.AddRange(Points);

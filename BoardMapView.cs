@@ -5,6 +5,8 @@ using System.Windows.Media.Imaging;
 
 namespace RiftPen;
 
+public enum BoardPathMode { Off, Path, Heatmap }
+
 /// <summary>What a drawing surface needs to draw on the Rift Board instead of over the game.</summary>
 public interface IBoardView
 {
@@ -191,6 +193,187 @@ public sealed class BoardMapView : FrameworkElement, IBoardView
         return true;
     }
 
+    // ---------------------------------------------------------------- objective timers
+
+    public bool ShowObjectives { get; set; } = true;
+
+    static readonly Dictionary<string, Color> ObjectiveColors = new()
+    {
+        ["dragon"] = Color.FromRgb(255, 140, 60), ["grubs"] = Color.FromRgb(180, 120, 255),
+        ["herald"] = Color.FromRgb(200, 110, 255), ["baron"] = Color.FromRgb(170, 90, 255),
+    };
+
+    void DrawObjectives(DrawingContext dc, GameTimeline g, double t, double r)
+    {
+        foreach (var o in Objectives.At(g, t))
+        {
+            var v = WorldToView(o.Pit);
+            var c = ObjectiveColors.TryGetValue(o.Kind, out var oc) ? oc : Colors.Gold;
+            string text = o.Up ? $"{o.Name} · up" : $"{o.Name} {Objectives.Clock(o.SpawnsIn)}";
+            var ft = Text(text, Math.Clamp(r * 0.62, 10, 15), Brushes.White, Bold);
+            var box = new Rect(v.X - ft.Width / 2 - 7, v.Y - ft.Height / 2 - 3, ft.Width + 14, ft.Height + 6);
+            if (o.Up) dc.DrawRoundedRectangle(null, new Pen(new SolidColorBrush(Color.FromArgb(90, c.R, c.G, c.B)), 5), box, 8, 8);
+            dc.DrawRoundedRectangle(new SolidColorBrush(Color.FromArgb(o.Up ? (byte)235 : (byte)205, 16, 18, 24)),
+                new Pen(new SolidColorBrush(o.Up ? c : Color.FromArgb(150, c.R, c.G, c.B)), o.Up ? 2 : 1.2), box, 7, 7);
+            dc.DrawText(ft, new Point(box.X + 7, box.Y + 3));
+        }
+    }
+
+    /// <summary>Countdown on a destroyed inhibitor until it comes back (5 minutes).</summary>
+    void DrawInhibitorTimers(DrawingContext dc, double t, double r)
+    {
+        for (int i = 0; i < Structures.Length; i++)
+        {
+            if (Structures[i].Kind != Building.Inhibitor) continue;
+            var down = destroyed[i].Where(d => d <= t && t < d + 300).DefaultIfEmpty(double.NaN).Max();
+            if (double.IsNaN(down)) continue;
+            var v = WorldToView(Structures[i].P);
+            var ft = Text(Objectives.Clock(down + 300 - t), Math.Clamp(r * 0.55, 9, 13), Brushes.White, Bold);
+            var at = new Point(v.X - ft.Width / 2, v.Y + r * 0.55);
+            dc.DrawRoundedRectangle(new SolidColorBrush(Color.FromArgb(200, 16, 18, 24)), null, new Rect(at.X - 4, at.Y - 1, ft.Width + 8, ft.Height + 2), 4, 4);
+            dc.DrawText(ft, at);
+        }
+    }
+
+    // ---------------------------------------------------------------- paths and heatmap
+
+    /// <summary>Where champions went: a fading line (Path) or where they spent their time (Heatmap).</summary>
+    public BoardPathMode PathMode { get; set; } = BoardPathMode.Off;
+    /// <summary>How far back paths and heatmaps look, in seconds (0 = the whole game so far).</summary>
+    public double PathWindow { get; set; } = 120;
+
+    (string Key, List<(int Team, float[] Cells)> Layers, float Max)? heatCache;
+    const int HeatN = 64;
+
+    /// <summary>
+    /// Recorded positions tidied for drawing: single readings that jump away and straight back (a mixed-up icon)
+    /// are dropped, and the rest are averaged over about a second so the line follows the walk, not the jitter.
+    /// </summary>
+    static List<(double T, Point P)> CleanPath(List<(double T, Point P)> s)
+    {
+        if (s.Count < 3) return s;
+        var kept = new List<(double T, Point P)> { s[0] };
+        for (int i = 1; i < s.Count - 1; i++)
+        {
+            var (ta, a) = kept[^1];
+            var (tb, b) = s[i];
+            var (tc, c) = s[i + 1];
+            double reachAB = ChampionTracker.MaxRunSpeed * (tb - ta) + 450, reachBC = ChampionTracker.MaxRunSpeed * (tc - tb) + 450;
+            bool spike = (b - a).Length > reachAB && (c - b).Length > reachBC && (c - a).Length <= ChampionTracker.MaxRunSpeed * (tc - ta) + 450;
+            if (!spike) kept.Add(s[i]);
+        }
+        kept.Add(s[^1]);
+
+        // Short isolated stretches (a couple of seconds of mixed-up icons in a fight) are left out.
+        var runs = new List<List<(double T, Point P)>>();
+        foreach (var x in kept)
+        {
+            if (runs.Count > 0 && runs[^1][^1] is var last && x.T - last.T <= 5 &&
+                (x.P - last.P).Length <= ChampionTracker.MaxRunSpeed * (x.T - last.T) + 450)
+                runs[^1].Add(x);
+            else runs.Add(new List<(double T, Point P)> { x });
+        }
+        kept = runs.Where(r => r.Count >= 6 && r[^1].T - r[0].T >= 2).SelectMany(r => r).ToList();
+        if (kept.Count == 0) return kept;
+
+        var smooth = new List<(double T, Point P)>(kept.Count);
+        for (int i = 0; i < kept.Count; i++)
+        {
+            double x = 0, y = 0, w = 0;
+            for (int j = Math.Max(0, i - 2); j <= Math.Min(kept.Count - 1, i + 2); j++)
+            {
+                if (Math.Abs(kept[j].T - kept[i].T) > 1.2) continue;
+                if ((kept[j].P - kept[i].P).Length > 800) continue; // don't blend across a recall or flash
+                double k = j == i ? 2 : 1;
+                x += kept[j].P.X * k; y += kept[j].P.Y * k; w += k;
+            }
+            smooth.Add((kept[i].T, new Point(x / w, y / w)));
+        }
+        return smooth;
+    }
+
+    void DrawPaths(DrawingContext dc, GameTimeline g, double t, double r)
+    {
+        var tracks = R.Tracks;
+        if (tracks == null) return;
+        double from = PathWindow > 0 ? t - PathWindow : 0;
+        var who = SelectedId is int sid ? g.Participants.Where(p => p.Id == sid).ToList() : g.Participants;
+        if (PathMode == BoardPathMode.Heatmap) { DrawHeat(dc, g, tracks, who, from, t); return; }
+
+        foreach (var p in who)
+        {
+            var samples = CleanPath(tracks.Samples(p.Id, from, t));
+            var c = SelectedId != null ? Color.FromRgb(255, 214, 10) : p.Team == 100 ? BlueTeam : RedTeam;
+            double width = Math.Max(2, r * (SelectedId != null ? 0.2 : 0.13));
+            for (int i = 1; i < samples.Count; i++)
+            {
+                var (ta, pa) = samples[i - 1];
+                var (tb, pb) = samples[i];
+                double dt = tb - ta;
+                // A break in the line for gaps, recalls and deaths rather than a line across the map.
+                if (dt > 5 || (pb - pa).Length > ChampionTracker.MaxRunSpeed * dt + 450) continue;
+                double age = (t - tb) / Math.Max(1, t - from);
+                byte a = (byte)(60 + 170 * (1 - Math.Clamp(age, 0, 1)));
+                dc.DrawLine(new Pen(new SolidColorBrush(Color.FromArgb(a, c.R, c.G, c.B)), width) { StartLineCap = PenLineCap.Round, EndLineCap = PenLineCap.Round },
+                    WorldToView(pa), WorldToView(pb));
+            }
+        }
+    }
+
+    void DrawHeat(DrawingContext dc, GameTimeline g, GameTracks tracks, List<GameParticipant> who, double from, double t)
+    {
+        // Rebuilt at most twice a second of game time (and when the selection or window changes).
+        string key = $"{SelectedId}|{PathWindow}|{Math.Floor(t * 2)}|{R.Version / 25}";
+        if (heatCache?.Key != key)
+        {
+            var layers = new List<(int, float[])>();
+            float max = 0;
+            foreach (int team in SelectedId != null ? new[] { 0 } : new[] { 100, 200 })
+            {
+                var cells = new float[HeatN * HeatN];
+                foreach (var p in who.Where(x => team == 0 || x.Team == team))
+                {
+                    var s = CleanPath(tracks.Samples(p.Id, from, t));
+                    for (int i = 0; i < s.Count; i++)
+                    {
+                        double weight = i + 1 < s.Count ? Math.Min(1, s[i + 1].T - s[i].T) : 0.2; // seconds spent there
+                        int cx = (int)((s[i].P.X - MinimapVision.WorldBounds.X) / MinimapVision.WorldBounds.Width * HeatN);
+                        int cy = (int)((MinimapVision.WorldBounds.Bottom - s[i].P.Y) / MinimapVision.WorldBounds.Height * HeatN);
+                        if ((uint)cx >= HeatN || (uint)cy >= HeatN) continue;
+                        // Spread each sample over the neighbouring cells so the heat looks smooth.
+                        for (int dy = -1; dy <= 1; dy++)
+                            for (int dx = -1; dx <= 1; dx++)
+                            {
+                                int x = cx + dx, y = cy + dy;
+                                if ((uint)x >= HeatN || (uint)y >= HeatN) continue;
+                                cells[y * HeatN + x] += (float)(weight * (dx == 0 && dy == 0 ? 1 : 0.35));
+                            }
+                    }
+                }
+                max = Math.Max(max, cells.Max());
+                layers.Add((team, cells));
+            }
+            heatCache = (key, layers, max);
+        }
+        var (_, ls, m) = heatCache.Value;
+        if (m <= 0) return;
+        var o = WorldToView(new Point(MinimapVision.WorldBounds.X, MinimapVision.WorldBounds.Bottom));
+        double cell = MinimapVision.WorldBounds.Width * Scale / HeatN, cellH = MinimapVision.WorldBounds.Height * Scale / HeatN;
+        foreach (var (team, cells) in ls)
+            for (int y = 0; y < HeatN; y++)
+                for (int x = 0; x < HeatN; x++)
+                {
+                    float v = cells[y * HeatN + x];
+                    if (v < m * 0.03) continue; // places only passed through briefly stay clear
+                    double k = Math.Pow(v / m, 0.6);
+                    // One champion: yellow to red as time spent grows. Both teams: each in its own colour.
+                    var c = team == 100 ? BlueTeam : team == 200 ? RedTeam
+                        : Color.FromRgb(255, (byte)(214 - 170 * k), (byte)(40 * (1 - k)));
+                    dc.DrawRectangle(new SolidColorBrush(Color.FromArgb((byte)(25 + 185 * k), c.R, c.G, c.B)), null,
+                        new Rect(o.X + x * cell, o.Y + y * cellH, cell + 0.5, cellH + 0.5));
+                }
+    }
+
     // ---------------------------------------------------------------- rendering
 
     /// <summary>Where each champion was drawn last frame (for clicking and dragging them).</summary>
@@ -248,7 +431,10 @@ public sealed class BoardMapView : FrameworkElement, IBoardView
         if (structuresFor != game) MatchBuildings(game);
         for (int i = 0; i < Structures.Length; i++) DrawStructure(dc, Structures[i].Team, Structures[i].Kind, WorldToView(Structures[i].P), r, StructureUp(i, t));
 
+        DrawInhibitorTimers(dc, t, r);
         DrawEvents(dc, game, t, r);
+        if (ShowObjectives) DrawObjectives(dc, game, t, r);
+        if (PathMode != BoardPathMode.Off) DrawPaths(dc, game, t, r);
         if (ShowCamera) DrawCamera(dc);
 
         // Champions as they were at this moment.

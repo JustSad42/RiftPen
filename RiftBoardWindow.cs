@@ -48,6 +48,8 @@ public sealed class RiftBoardWindow : Window
     readonly StackPanel drawTools = new() { Orientation = Orientation.Horizontal, Visibility = Visibility.Collapsed };
     readonly ToggleButton linkBtn = new(), drawBtn = new(), cleanBtn = new(), trailBtn = new();
     readonly Button playBtn = new();
+    readonly ToggleButton timersBtn = new();
+    readonly Button pathsBtn = new();
     readonly ComboBox speedBox = new();
     readonly Button colorBtn = new();
     readonly DispatcherTimer tick;
@@ -99,9 +101,14 @@ public sealed class RiftBoardWindow : Window
         }
         else { Width = 1500; Height = 950; WindowStartupLocation = WindowStartupLocation.CenterScreen; }
 
+        SourceInitialized += (_, _) => AvoidLeagueScreen();
+
         map.TimeSource = Now;
         map.CleanMap = S.Settings.BoardCleanMap;
         map.Trails = S.Settings.BoardTrails;
+        map.ShowObjectives = S.Settings.BoardTimers;
+        map.PathMode = Enum.TryParse<BoardPathMode>(S.Settings.BoardPathMode, out var pm) ? pm : BoardPathMode.Off;
+        map.PathWindow = S.Settings.BoardPathWindow;
         timeline.TimeSource = Now;
         timeline.Scrub += OnScrub;
         ink.Board = map;
@@ -141,6 +148,27 @@ public sealed class RiftBoardWindow : Window
             instance = null;
         };
         PreviewKeyDown += OnKey;
+    }
+
+    /// <summary>
+    /// With "open on a screen without League" on: if the board would open on League's screen (covering the
+    /// minimap it reads positions from) and there's another screen, it opens maximized there instead.
+    /// </summary>
+    void AvoidLeagueScreen()
+    {
+        if (!S.Settings.BoardAvoidLeagueScreen) return;
+        var hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+        if (!Native.TryGetClientScreenRect(Native.FindLeagueWindow(), out var league) || !Native.GetWindowRect(hwnd, out var me)) return;
+        var screens = Native.GetMonitors();
+        Native.RECT? ScreenOf(int x, int y) => screens.Cast<Native.RECT?>().FirstOrDefault(m => m!.Value.Contains(x, y));
+        var leagueScreen = ScreenOf(league.Left + league.Width / 2, league.Top + league.Height / 2);
+        var myScreen = ScreenOf(me.Left + me.Width / 2, me.Top + me.Height / 2);
+        if (leagueScreen == null || (myScreen != null && !myScreen.Value.Equals(leagueScreen.Value))) return;
+        var other = screens.Where(m => !m.Equals(leagueScreen.Value)).OrderByDescending(m => (long)m.Width * m.Height).Cast<Native.RECT?>().FirstOrDefault();
+        if (other is not Native.RECT target) return;
+        WindowState = WindowState.Normal;
+        Native.SetWindowPos(hwnd, IntPtr.Zero, target.Left + 40, target.Top + 40, target.Width - 80, target.Height - 80, 0x4 /* NOZORDER */ | Native.SWP_NOACTIVATE);
+        WindowState = WindowState.Maximized;
     }
 
     // ---------------------------------------------------------------- layout
@@ -254,8 +282,17 @@ public sealed class RiftBoardWindow : Window
         cleanBtn.Click += (_, _) => { map.CleanMap = cleanBtn.IsChecked == true; S.Settings.BoardCleanMap = map.CleanMap; S.SaveSettingsSoon(); map.InvalidateVisual(); };
         SetupToggle(trailBtn, "", "Trails", "Show where each champion walked in the last 6 seconds", map.Trails);
         trailBtn.Click += (_, _) => { map.Trails = trailBtn.IsChecked == true; S.Settings.BoardTrails = map.Trails; S.SaveSettingsSoon(); map.InvalidateVisual(); };
+        SetupToggle(timersBtn, "", "Timers", "Dragon, Void Grubs, Herald and Baron spawn timers on the map, and inhibitor respawns", map.ShowObjectives);
+        timersBtn.Click += (_, _) => { map.ShowObjectives = timersBtn.IsChecked == true; S.Settings.BoardTimers = map.ShowObjectives; S.SaveSettingsSoon(); map.InvalidateVisual(); RefreshSide(); };
+        pathsBtn.Margin = new Thickness(2, 0, 2, 0);
+        Flat(pathsBtn);
+        pathsBtn.ToolTip = "Paths and heatmap: where champions went, or where they spent their time.\nSelect a champion to see only them; otherwise everyone is shown.";
+        pathsBtn.Click += (_, _) => PathsMenu().IsOpen = true;
+        UpdatePathsButton();
         right.Children.Add(cleanBtn);
         right.Children.Add(trailBtn);
+        right.Children.Add(timersBtn);
+        right.Children.Add(pathsBtn);
         right.Children.Add(MakeButton("", "Put dragged champions back where they really are", (_, _) => { map.Moved.Clear(); map.MovedAt = double.NaN; map.InvalidateVisual(); }, "Reset"));
         right.Children.Add(MakeButton("", "Fit the whole map in the window (double-click with the middle button does it too)", (_, _) => map.ResetView(), "Fit"));
         right.Children.Add(MakeButton("", "Rift Board settings: Riot API key, minimap tracking", (_, _) => OpenSettings()));
@@ -319,6 +356,46 @@ public sealed class RiftBoardWindow : Window
         Grid.SetColumnSpan(bottom, 2);
         root.Children.Add(bottom);
         return root;
+    }
+
+    void UpdatePathsButton()
+    {
+        string window = map.PathWindow > 0 ? $"{map.PathWindow / 60:0} min" : "whole game";
+        string text = map.PathMode switch { BoardPathMode.Path => $"Path · {window}", BoardPathMode.Heatmap => $"Heatmap · {window}", _ => "Paths" };
+        pathsBtn.Content = ButtonContent("", text);
+        pathsBtn.Background = map.PathMode == BoardPathMode.Off ? ButtonBack : ButtonOn;
+    }
+
+    ContextMenu PathsMenu()
+    {
+        var menu = new ContextMenu { PlacementTarget = pathsBtn, Placement = PlacementMode.Bottom };
+        void Add(string header, BoardPathMode mode, double window)
+        {
+            var item = new MenuItem { Header = header, IsCheckable = true, IsChecked = map.PathMode == mode && (mode == BoardPathMode.Off || map.PathWindow == window) };
+            item.Click += (_, _) =>
+            {
+                map.PathMode = mode;
+                if (mode != BoardPathMode.Off) map.PathWindow = window;
+                S.Settings.BoardPathMode = mode.ToString();
+                S.Settings.BoardPathWindow = map.PathWindow;
+                S.SaveSettingsSoon();
+                UpdatePathsButton();
+                map.InvalidateVisual();
+            };
+            menu.Items.Add(item);
+        }
+        Add("Off", BoardPathMode.Off, map.PathWindow);
+        menu.Items.Add(new Separator());
+        Add("Path: last 1 minute", BoardPathMode.Path, 60);
+        Add("Path: last 2 minutes", BoardPathMode.Path, 120);
+        Add("Path: last 5 minutes", BoardPathMode.Path, 300);
+        menu.Items.Add(new Separator());
+        Add("Heatmap: last 5 minutes", BoardPathMode.Heatmap, 300);
+        Add("Heatmap: last 10 minutes", BoardPathMode.Heatmap, 600);
+        Add("Heatmap: whole game so far", BoardPathMode.Heatmap, 0);
+        menu.Items.Add(new Separator());
+        menu.Items.Add(new MenuItem { Header = "Paths use positions recorded from the minimap; parts not yet watched are empty.", IsEnabled = false });
+        return menu;
     }
 
     ContextMenu ColorMenu()
@@ -609,6 +686,159 @@ public sealed class RiftBoardWindow : Window
     readonly StackPanel objectives = new() { Margin = new Thickness(0, 10, 0, 0) };
     readonly StackPanel details = new() { Margin = new Thickness(0, 12, 0, 0) };
     readonly TextBlock itemsNote = new() { Foreground = Dim, FontSize = 11, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0) };
+    readonly StackPanel timersPanel = new() { Margin = new Thickness(0, 10, 0, 0) };
+
+    // ---------------------------------------------------------------- objective timers (side panel)
+
+    void RefreshTimers(GameTimeline g, double t)
+    {
+        timersPanel.Children.Clear();
+        timersPanel.Visibility = map.ShowObjectives ? Visibility.Visible : Visibility.Collapsed;
+        if (!map.ShowObjectives) return;
+        timersPanel.Children.Add(new TextBlock { Text = "TIMERS", Foreground = Dim, FontWeight = FontWeights.Bold, FontSize = 12, Margin = new Thickness(2, 0, 0, 4) });
+        var wrap = new WrapPanel();
+        foreach (var o in Objectives.At(g, t))
+            wrap.Children.Add(Chip(o.Up ? $"{o.Name} · up" : $"{o.Name}  {Objectives.Clock(o.SpawnsIn)}", o.Up ? Color.FromRgb(255, 196, 60) : Color.FromRgb(150, 156, 170)));
+        timersPanel.Children.Add(wrap);
+    }
+
+    static Border Chip(string text, Color c) => new()
+    {
+        Child = new TextBlock { Text = text, FontWeight = FontWeights.SemiBold, FontSize = 12, Foreground = new SolidColorBrush(c) },
+        Background = new SolidColorBrush(Color.FromRgb(32, 35, 44)), CornerRadius = new CornerRadius(5),
+        Padding = new Thickness(8, 3, 8, 3), Margin = new Thickness(0, 0, 6, 6),
+    };
+
+    // ---------------------------------------------------------------- lane matchup
+
+    static readonly (string Lane, string Label)[] Lanes = { ("TOP", "Top"), ("JUNGLE", "Jungle"), ("MIDDLE", "Mid"), ("BOTTOM", "Bot"), ("UTILITY", "Support") };
+    static readonly (string Name, string Unit, Func<ParticipantFrame, double> Pick)[] Metrics =
+    {
+        ("Gold", "gold", f => f.TotalGold), ("CS", "CS", f => f.MinionsKilled + f.JungleMinionsKilled), ("XP", "XP", f => f.Xp),
+    };
+
+    readonly StackPanel matchupPanel = new() { Margin = new Thickness(0, 12, 0, 0) };
+    readonly WrapPanel laneButtons = new() { Margin = new Thickness(0, 0, 0, 6) };
+    readonly WrapPanel metricButtons = new() { Margin = new Thickness(0, 6, 0, 0) };
+    readonly TextBlock matchupTitle = new() { FontWeight = FontWeights.SemiBold, Margin = new Thickness(2, 0, 0, 4) };
+    readonly Grid matchupStats = new() { Margin = new Thickness(0, 0, 0, 6) };
+    readonly MatchupGraph matchupGraph = new();
+
+    /// <summary>The blue and red champion in a lane (Riot's position tag, or team order if it's missing).</summary>
+    (GameParticipant Blue, GameParticipant Red)? LanePair(GameTimeline g, string lane)
+    {
+        var blue = g.Participants.Where(p => p.Team == 100).ToList();
+        var red = g.Participants.Where(p => p.Team == 200).ToList();
+        if (blue.Count == 0 || red.Count == 0) return null;
+        int idx = Array.FindIndex(Lanes, l => l.Lane == lane);
+        var b = blue.FirstOrDefault(p => p.Lane == lane) ?? blue[Math.Clamp(idx, 0, blue.Count - 1)];
+        var r = red.FirstOrDefault(p => p.Lane == lane) ?? red[Math.Clamp(idx, 0, red.Count - 1)];
+        return (b, r);
+    }
+
+    void BuildMatchup()
+    {
+        matchupPanel.Children.Clear();
+        matchupPanel.Children.Add(new TextBlock { Text = "LANE MATCHUP", Foreground = Dim, FontWeight = FontWeights.Bold, FontSize = 12, Margin = new Thickness(2, 0, 0, 4) });
+        laneButtons.Children.Clear();
+        foreach (var (lane, label) in Lanes)
+        {
+            var b = new ToggleButton();
+            SetupToggle(b, "", label, $"Compare the two {label.ToLowerInvariant()} players", S.Settings.BoardMatchupLane == lane);
+            b.Padding = new Thickness(8, 3, 8, 3);
+            b.MinHeight = 24;
+            b.Margin = new Thickness(0, 0, 4, 4);
+            b.Tag = lane;
+            b.Click += (_, _) => { S.Settings.BoardMatchupLane = lane; S.SaveSettingsSoon(); SyncChoiceButtons(); RefreshMatchup(); };
+            laneButtons.Children.Add(b);
+        }
+        matchupPanel.Children.Add(laneButtons);
+        matchupPanel.Children.Add(matchupTitle);
+        matchupStats.ColumnDefinitions.Clear();
+        foreach (var w in new[] { 1.2, 1, 1, 1 }) matchupStats.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(w, GridUnitType.Star) });
+        matchupPanel.Children.Add(matchupStats);
+        matchupGraph.TimeSource = Now;
+        matchupGraph.Seek -= SetTime;
+        matchupGraph.Seek += SetTime;
+        matchupPanel.Children.Add(matchupGraph);
+        metricButtons.Children.Clear();
+        foreach (var (name, _, _) in Metrics)
+        {
+            var b = new ToggleButton();
+            SetupToggle(b, "", name, $"Graph the {name} difference over the game", S.Settings.BoardMatchupMetric == name);
+            b.Padding = new Thickness(8, 3, 8, 3);
+            b.MinHeight = 24;
+            b.Margin = new Thickness(0, 0, 4, 0);
+            b.Tag = name;
+            b.Click += (_, _) => { S.Settings.BoardMatchupMetric = name; S.SaveSettingsSoon(); SyncChoiceButtons(); RefreshMatchup(); };
+            metricButtons.Children.Add(b);
+        }
+        matchupPanel.Children.Add(metricButtons);
+    }
+
+    void SyncChoiceButtons()
+    {
+        foreach (var panel in new[] { laneButtons, metricButtons })
+            foreach (var child in panel.Children)
+                if (child is ToggleButton { Tag: string tag } tb)
+                {
+                    tb.IsChecked = tag == S.Settings.BoardMatchupLane || tag == S.Settings.BoardMatchupMetric;
+                    tb.Background = tb.IsChecked == true ? ButtonOn : ButtonBack;
+                }
+    }
+
+    void RefreshMatchup()
+    {
+        var g = R.Game;
+        if (g == null || LanePair(g, S.Settings.BoardMatchupLane) is not var (blue, red)) return;
+        double t = Now();
+        var metric = Metrics.FirstOrDefault(m => m.Name == S.Settings.BoardMatchupMetric);
+        if (metric.Pick == null) metric = Metrics[0];
+        matchupGraph.BlueId = blue.Id;
+        matchupGraph.RedId = red.Id;
+        matchupGraph.Metric = metric.Pick;
+        matchupGraph.Unit = metric.Unit;
+        matchupGraph.InvalidateVisual();
+
+        matchupTitle.Inlines.Clear();
+        matchupTitle.Inlines.Add(new System.Windows.Documents.Run(blue.ChampionName) { Foreground = new SolidColorBrush(BlueTeam) });
+        matchupTitle.Inlines.Add(new System.Windows.Documents.Run("  vs  ") { Foreground = Dim });
+        matchupTitle.Inlines.Add(new System.Windows.Documents.Run(red.ChampionName) { Foreground = new SolidColorBrush(RedTeam) });
+
+        // Live numbers when the board is at the replay's moment, otherwise Riot's per-minute timeline.
+        bool live = R.LiveAt(t);
+        LivePlayer? Lp(GameParticipant p) => live ? R.Live.Players.FirstOrDefault(x => x.ChampionKey == p.ChampionKey) : null;
+        double Cs(GameParticipant p) => Lp(p)?.CreepScore ?? R.StatAt(p.Id, t, f => f.MinionsKilled + f.JungleMinionsKilled);
+        var rowsData = new (string Label, double B, double R, Func<double, string> Fmt)[]
+        {
+            ("Gold", R.StatAt(blue.Id, t, f => f.TotalGold), R.StatAt(red.Id, t, f => f.TotalGold), v => $"{v / 1000:0.0}k"),
+            ("CS", Cs(blue), Cs(red), v => $"{v:0}"),
+            ("Level", R.StateAt(blue, t).Level, R.StateAt(red, t).Level, v => $"{v:0}"),
+            ("XP", R.StatAt(blue.Id, t, f => f.Xp), R.StatAt(red.Id, t, f => f.Xp), v => $"{v:N0}"),
+        };
+        matchupStats.Children.Clear();
+        matchupStats.RowDefinitions.Clear();
+        for (int i = 0; i < rowsData.Length; i++)
+        {
+            var (label, b, r, fmt) = rowsData[i];
+            matchupStats.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            double diff = b - r;
+            var cells = new (string Text, Brush Brush, HorizontalAlignment Align)[]
+            {
+                (label, Dim, HorizontalAlignment.Left),
+                (fmt(b), new SolidColorBrush(BlueTeam), HorizontalAlignment.Right),
+                (fmt(r), new SolidColorBrush(RedTeam), HorizontalAlignment.Right),
+                (Math.Abs(diff) < 0.5 ? "even" : (diff > 0 ? "+" : "−") + fmt(Math.Abs(diff)), new SolidColorBrush(Math.Abs(diff) < 0.5 ? Colors.Gray : diff > 0 ? BlueTeam : RedTeam), HorizontalAlignment.Right),
+            };
+            for (int c = 0; c < cells.Length; c++)
+            {
+                var tb = new TextBlock { Text = cells[c].Text, Foreground = cells[c].Brush, HorizontalAlignment = cells[c].Align, FontWeight = c == 3 ? FontWeights.SemiBold : FontWeights.Normal, Margin = new Thickness(2, 1, 2, 1) };
+                Grid.SetRow(tb, i);
+                Grid.SetColumn(tb, c);
+                matchupStats.Children.Add(tb);
+            }
+        }
+    }
 
     static readonly Dictionary<string, BitmapSource?> images = new();
 
@@ -653,6 +883,9 @@ public sealed class RiftBoardWindow : Window
             }
         }
         side.Children.Add(itemsNote);
+        side.Children.Add(timersPanel);
+        BuildMatchup();
+        side.Children.Add(matchupPanel);
         side.Children.Add(objectives);
         side.Children.Add(details);
     }
@@ -766,6 +999,8 @@ public sealed class RiftBoardWindow : Window
         itemsNote.Text = live ? "" : "Items show when the board is at the replay's moment (they come from the game itself).";
         itemsNote.Visibility = live ? Visibility.Collapsed : Visibility.Visible;
 
+        RefreshTimers(g, t);
+        RefreshMatchup();
         RefreshObjectives(g, t);
         RefreshDetails(g, t);
     }
@@ -861,11 +1096,41 @@ public sealed class RiftBoardWindow : Window
 
     internal void TestSelect(int? id) { map.SelectedId = id; RefreshAll(); map.InvalidateVisual(); }
 
+    internal void TestPaths(BoardPathMode mode, double window, string lane)
+    {
+        map.PathMode = mode;
+        map.PathWindow = window;
+        S.Settings.BoardMatchupLane = lane;
+        SyncChoiceButtons();
+        UpdatePathsButton();
+        RefreshAll();
+        map.InvalidateVisual();
+    }
+
     internal void TestSandbox(double t) { SetLinked(false); sandboxTime = t; RefreshAll(); map.InvalidateVisual(); timeline.InvalidateVisual(); }
 
     internal void TestMove(int id, Point world) { map.Moved[id] = world; map.MovedAt = Now(); map.InvalidateVisual(); }
 
     internal void TestDraw(DrawItem item) { S.Stamp(item, Now()); S.AddItem(item); ink.InvalidateVisual(); }
+
+    /// <summary>The whole side panel (scoreboard, timers, matchup…) as one image, scrolled parts included.</summary>
+    internal void SnapshotSide(string path)
+    {
+        side.UpdateLayout();
+        double dpi = VisualTreeHelper.GetDpi(this).PixelsPerDip;
+        var rtb = new RenderTargetBitmap((int)(side.ActualWidth * dpi) + 24, (int)(side.ActualHeight * dpi) + 24, 96 * dpi, 96 * dpi, PixelFormats.Pbgra32);
+        var dv = new DrawingVisual();
+        using (var dc = dv.RenderOpen())
+        {
+            dc.DrawRectangle(PanelBack, null, new Rect(0, 0, side.ActualWidth + 24, side.ActualHeight + 24));
+            dc.DrawRectangle(new VisualBrush(side), null, new Rect(12, 12, side.ActualWidth, side.ActualHeight));
+        }
+        rtb.Render(dv);
+        var enc = new PngBitmapEncoder();
+        enc.Frames.Add(BitmapFrame.Create(rtb));
+        using var fs = System.IO.File.Create(path);
+        enc.Save(fs);
+    }
 
     internal void Snapshot(string path)
     {
@@ -907,6 +1172,13 @@ public sealed class RiftBoardWindow : Window
                    "positions are saved per game, so anything you've watched once can be scrubbed later.",
             Foreground = Dim, TextWrapping = TextWrapping.Wrap, FontSize = 12, Margin = new Thickness(22, 0, 0, 12),
         });
+        var avoid = new CheckBox { Content = "Open the Rift Board on a screen League isn't on", IsChecked = S.Settings.BoardAvoidLeagueScreen, Foreground = Fg, Margin = new Thickness(0, 0, 0, 4) };
+        sp.Children.Add(avoid);
+        sp.Children.Add(new TextBlock
+        {
+            Text = "With more than one monitor, the board opens maximized on another screen so it never covers League's minimap (which pauses recording).",
+            Foreground = Dim, TextWrapping = TextWrapping.Wrap, FontSize = 12, Margin = new Thickness(22, 0, 0, 12),
+        });
         sp.Children.Add(new TextBlock { Text = "Learned icons", FontWeight = FontWeights.SemiBold });
         var iconsInfo = new TextBlock
         {
@@ -933,6 +1205,7 @@ public sealed class RiftBoardWindow : Window
             bool keyChanged = newKey != (S.Settings.RiotApiKey ?? "");
             S.Settings.RiotApiKey = newKey.Length > 0 ? newKey : null;
             S.Settings.TrackMinimap = track.IsChecked == true;
+            S.Settings.BoardAvoidLeagueScreen = avoid.IsChecked == true;
             S.Settings.Save();
             if (keyChanged) R.Reload();
             dlg.Close();
