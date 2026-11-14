@@ -42,12 +42,40 @@ public sealed class DrawCanvas : FrameworkElement
     // select tool
     bool dragging, moved;
     DrawItem? selBefore;
+    // Resizing a range circle by dragging its edge.
+    bool resizing;
+    Point resizeCursor;
 
     // minimap area picking
     bool picking;
     Point pickStart, pickEnd;
 
     readonly List<(DrawItem Item, DateTime Released)> lasers = new();
+
+    // Fading ink: finished strokes that disappear on their own (never saved).
+    readonly List<(DrawItem Item, DateTime Done)> inks = new();
+    const double InkFadeOut = 0.8;
+    static bool CanFade(ToolKind k) => k is ToolKind.Pen or ToolKind.Highlighter or ToolKind.Line or ToolKind.Arrow or ToolKind.Rectangle or ToolKind.Ellipse;
+    double InkAlpha(DateTime done)
+    {
+        double age = (DateTime.Now - done).TotalSeconds, hold = Math.Max(0.5, S.Settings.FadeSeconds);
+        return age < hold ? 1 : Math.Clamp(1 - (age - hold) / InkFadeOut, 0, 1);
+    }
+    void ExpireInks() { if (inks.Count > 0) inks.RemoveAll(i => InkAlpha(i.Done) <= 0); }
+
+    void RenderInks(DrawingContext dc, bool map)
+    {
+        foreach (var (ink, done) in inks)
+        {
+            if (ink.Space == Space.World && !map) continue;
+            if (Board != null && ink.Space != Space.World) continue;
+            double a = InkAlpha(done);
+            if (a <= 0) continue;
+            dc.PushOpacity(a);
+            RenderItem(dc, ink);
+            dc.Pop();
+        }
+    }
 
     TextBox? editBox;
     Point editStored;
@@ -112,7 +140,7 @@ public sealed class DrawCanvas : FrameworkElement
     }
 
     /// <summary>Something is animating or in progress, so the overlay should keep redrawing every frame.</summary>
-    public bool Busy => lasers.Count > 0 || pings.Count > 0 || status != null || current != null || dragging || erasing || S.WheelOpen || S.Spotlight;
+    public bool Busy => lasers.Count > 0 || inks.Count > 0 || pings.Count > 0 || status != null || current != null || dragging || resizing || erasing || S.WheelOpen || S.Spotlight;
 
     // Ping ripples: transient, never saved.
     readonly List<(Point Pos, Space Space, Color Color, DateTime At)> pings = new();
@@ -156,7 +184,8 @@ public sealed class DrawCanvas : FrameworkElement
         lastKey = key;
         bool timedActive = timeChanged && key != null && S.ContextHasTimedNotes;
 
-        bool lasersActive = lasers.Count > 0 || pings.Count > 0 || S.Spotlight;
+        bool lasersActive = lasers.Count > 0 || inks.Count > 0 || pings.Count > 0 || S.Spotlight;
+        ExpireInks();
         if (lasers.Count > 0)
         {
             double life = S.Settings.LaserSeconds + 0.6;
@@ -234,7 +263,7 @@ public sealed class DrawCanvas : FrameworkElement
 
     bool HasWorldContent() =>
         S.Settings.ShowGrid || current?.Space == Space.World || S.ContextItems.Any(i => i.Space == Space.World) ||
-        lasers.Any(l => l.Item.Space == Space.World) || (hover != null && S.Tool == ToolKind.Range);
+        lasers.Any(l => l.Item.Space == Space.World) || inks.Any(i => i.Item.Space == Space.World) || (hover != null && S.Tool == ToolKind.Range);
 
     public void UpdateCursor()
     {
@@ -297,10 +326,20 @@ public sealed class DrawCanvas : FrameworkElement
     {
         if (!InputOn) return;
         e.Handled = true;
+        Press(e.GetPosition(this), PressureOf(e));
+    }
+
+    // Self-test hooks: the same as pressing, moving and letting go of the left button at a point.
+    internal void TestDown(Point p) { if (InputOn) Press(p, null); }
+    internal void TestMove(Point p) { if (resizing) ResizeRange(p); else if (dragging) DragSelected(p); else if (current != null) UpdateCurrent(p, null); }
+    internal void TestUp() => Finish();
+    internal int FadingCount => inks.Count;
+
+    void Press(Point p, float? downPressure)
+    {
         CommitText();
         Focus();
 
-        var p = e.GetPosition(this);
         if (S.PickingMinimap)
         {
             picking = true;
@@ -334,6 +373,9 @@ public sealed class DrawCanvas : FrameworkElement
             InvalidateVisual();
             return;
         }
+
+        // Dragging the edge of a circle that's already there resizes it instead of placing a new one.
+        if (S.Tool == ToolKind.Range && RangeEdgeAt(p) != null) { BeginSelect(p); return; }
 
         if (S.Tool == ToolKind.Range)
         {
@@ -399,7 +441,7 @@ public sealed class DrawCanvas : FrameworkElement
             item.FollowKey = from;
             item.Points[0] = fromPos;
         }
-        if (IsFreehand(item.Kind) && S.Settings.PenPressure && PressureOf(e) is float pressure)
+        if (IsFreehand(item.Kind) && S.Settings.PenPressure && downPressure is float pressure)
             item.Pressure = new List<float> { pressure };
         current = item;
         CaptureMouse();
@@ -412,6 +454,7 @@ public sealed class DrawCanvas : FrameworkElement
         var p = e.GetPosition(this);
         if (picking) { pickEnd = p; InvalidateVisual(); return; }
         if (erasing) { EraseAt(p); return; }
+        if (resizing) { ResizeRange(p); return; }
         if (dragging) { DragSelected(p); return; }
         if (current == null || e.LeftButton != MouseButtonState.Pressed)
         {
@@ -541,11 +584,12 @@ public sealed class DrawCanvas : FrameworkElement
             if (erased.Count > 0) S.PushRemoval(erased.ToList());
             erased.Clear();
         }
-        if (dragging)
+        if (dragging || resizing)
         {
-            dragging = false;
+            dragging = resizing = false;
             if (moved && S.Selected is { } sel && selBefore != null) S.PushEdit(sel, selBefore, null);
             selBefore = null;
+            InvalidateVisual();
         }
         if (current != null)
         {
@@ -554,6 +598,11 @@ public sealed class DrawCanvas : FrameworkElement
             if (it.Kind == ToolKind.Laser)
             {
                 if (it.Points.Count > 0) lasers.Add((it, DateTime.Now));
+            }
+            else if (IsComplete(it) && S.Settings.FadingInk && CanFade(it.Kind))
+            {
+                if (it.Kind is ToolKind.Pen or ToolKind.Highlighter) Simplify(it);
+                inks.Add((it, DateTime.Now));
             }
             else if (IsComplete(it))
             {
@@ -659,8 +708,65 @@ public sealed class DrawCanvas : FrameworkElement
 
     // ---------------------------------------------------------------- select / move
 
+    /// <summary>A range circle whose edge (or edge handle) is under the cursor, selected one first.</summary>
+    DrawItem? RangeEdgeAt(Point p)
+    {
+        bool OnEdge(DrawItem it)
+        {
+            if (it.Kind != ToolKind.Range || it.Points.Count == 0 || !IsShown(it)) return false;
+            if (RangeHandle(it, out var h) && (h - p).Length <= 11) return true;
+            if (TryScreen(it, it.Points[0], out var c) && (c - p).Length <= 14) return false; // the centre moves it
+            foreach (var run in ScreenPaths(it))
+                for (int k = 1; k < run.Count; k++)
+                    if (SegmentDistance(p, run[k - 1], run[k]) <= 6 + it.Thickness / 2) return true;
+            return false;
+        }
+        if (S.Selected is { } sel && OnEdge(sel)) return sel;
+        for (int i = S.Items.Count - 1; i >= 0; i--)
+            if (OnEdge(S.Items[i])) return S.Items[i];
+        return null;
+    }
+
+    /// <summary>Where a range circle's resize handle sits on screen (its right-hand edge).</summary>
+    bool RangeHandle(DrawItem it, out Point screen)
+    {
+        screen = default;
+        return it.Kind == ToolKind.Range && it.Points.Count > 0 && MapPoint(new Point(it.Points[0].X + it.Radius, it.Points[0].Y), out screen);
+    }
+
+    void ResizeRange(Point p)
+    {
+        if (S.Selected is not { Kind: ToolKind.Range } it || !ToWorld(p, out var w)) return;
+        double r = (w - it.Points[0]).Length;
+        // Shift snaps to 25 units, like most ability ranges.
+        if ((Keyboard.Modifiers & ModifierKeys.Shift) != 0) r = Math.Round(r / 25) * 25;
+        it.Radius = Math.Clamp(Math.Round(r), 25, 8000);
+        resizeCursor = p;
+        moved = true;
+        InvalidateVisual();
+    }
+
+    /// <summary>A range circle's label, with the size it has now (it can be resized after placing).</summary>
+    static string RangeLabel(DrawItem it)
+    {
+        var text = it.Text ?? "";
+        var m = System.Text.RegularExpressions.Regex.Match(text, @"^(.*?)\s*\d+$");
+        return (m.Success ? m.Groups[1].Value : text) + $" {it.Radius:0}";
+    }
+
     void BeginSelect(Point p)
     {
+        if (RangeEdgeAt(p) is { } edge)
+        {
+            S.Selected = edge;
+            selBefore = edge.Clone();
+            resizing = true;
+            moved = false;
+            resizeCursor = p;
+            CaptureMouse();
+            InvalidateVisual();
+            return;
+        }
         DrawItem? hit = null;
         for (int i = S.Items.Count - 1; i >= 0; i--)
         {
@@ -823,7 +929,8 @@ public sealed class DrawCanvas : FrameworkElement
             double alpha = age < hold ? 1 : Math.Clamp(1 - (age - hold) / 0.6, 0, 1);
             if (alpha > 0) RenderLaser(dc, laser, alpha);
         }
-        if (S.Tool == ToolKind.Select && S.Selected is { } sel && IsShown(sel)) DrawSelection(dc, sel);
+        RenderInks(dc, true);
+        if ((S.Tool == ToolKind.Select || resizing) && S.Selected is { } sel && IsShown(sel)) DrawSelection(dc, sel);
         DrawGhost(dc);
         DrawPings(dc, true);
         if (status != null && DateTime.Now < statusUntil) Label(dc, status, new Point(RenderSize.Width / 2, 28), 13);
@@ -834,8 +941,9 @@ public sealed class DrawCanvas : FrameworkElement
     {
         if (lasers.Count > 0) lasers.RemoveAll(l => (DateTime.Now - l.Released).TotalSeconds > S.Settings.LaserSeconds + 0.6);
         if (pings.Count > 0) pings.RemoveAll(p => (DateTime.Now - p.At).TotalSeconds > PingSeconds);
+        ExpireInks();
         if (status != null && DateTime.Now > statusUntil) { status = null; InvalidateVisual(); }
-        bool busy = lasers.Count > 0 || pings.Count > 0;
+        bool busy = lasers.Count > 0 || inks.Count > 0 || pings.Count > 0;
         if (busy) InvalidateVisual();
         return busy;
     }
@@ -880,8 +988,9 @@ public sealed class DrawCanvas : FrameworkElement
                 double alpha = age < hold ? 1 : Math.Clamp(1 - (age - hold) / 0.6, 0, 1);
                 if (alpha > 0) RenderLaser(dc, laser, alpha);
             }
+            RenderInks(dc, map);
 
-            if (S.Tool == ToolKind.Select && S.Selected is { } sel && IsShown(sel)) DrawSelection(dc, sel);
+            if ((S.Tool == ToolKind.Select || resizing) && S.Selected is { } sel && IsShown(sel)) DrawSelection(dc, sel);
             if (worldVisible) DrawMinimap(dc);
             DrawGhost(dc);
             DrawPings(dc, map);
@@ -1313,15 +1422,25 @@ public sealed class DrawCanvas : FrameworkElement
         }
     }
 
-    /// <summary>Vision radius of a ward marker in game units (stealth and control wards both see 900), or 0.</summary>
-    static double WardVisionRadius(MarkerKind k) => k is MarkerKind.Ward or MarkerKind.ControlWard ? 900 : 0;
+    /// <summary>Vision radius of a ward stamp in game units (stealth and control wards see 900, farsight 500), or 0.</summary>
+    static double WardVisionRadius(MarkerKind k) => k switch
+    {
+        MarkerKind.Ward or MarkerKind.ControlWard => 900,
+        MarkerKind.FarsightWard => 500,
+        _ => 0,
+    };
 
     /// <summary>The area a ward marker would reveal, drawn on the ground around it.</summary>
     void DrawWardVision(DrawingContext dc, MarkerKind kind, Point world)
     {
         double radius = WardVisionRadius(kind);
         if (radius <= 0 || !S.Settings.WardVision) return;
-        var c = kind == MarkerKind.ControlWard ? Color.FromRgb(255, 79, 163) : Color.FromRgb(255, 214, 10);
+        var c = kind switch
+        {
+            MarkerKind.ControlWard => Color.FromRgb(255, 79, 163),
+            MarkerKind.FarsightWard => Color.FromRgb(64, 156, 255),
+            _ => Color.FromRgb(255, 214, 10),
+        };
         var runs = ProjectRuns(Ring(world, radius, radius, 96));
         if (runs.Count == 1 && runs[0].Count > 90 && !minimapPass)
         {
@@ -1376,7 +1495,10 @@ public sealed class DrawCanvas : FrameworkElement
         if (minimapPass) return;
         if (MapPoint(c, out var mid)) dc.DrawEllipse(edge, null, mid, 3, 3);
         if (S.Settings.ShowRangeLabels && !string.IsNullOrEmpty(it.Text) && MapPoint(new Point(c.X, c.Y + it.Radius), out var top))
-            Label(dc, it.FollowKey != null ? $"{it.Text}  ·  on {ChampionName(it.FollowKey)}" : it.Follow ? $"{it.Text}  ·  {(waiting ? "lock the camera to follow" : "following")}" : it.Text!, top, 12);
+        {
+            var name = RangeLabel(it);
+            Label(dc, it.FollowKey != null ? $"{name}  ·  on {ChampionName(it.FollowKey)}" : it.Follow ? $"{name}  ·  {(waiting ? "lock the camera to follow" : "following")}" : name, top, 12);
+        }
     }
 
     /// <summary>Map drawings repeated, small, on the minimap.</summary>
@@ -1413,6 +1535,20 @@ public sealed class DrawCanvas : FrameworkElement
         }
         else foreach (var run in ScreenPaths(it)) foreach (var p in run) Add(p);
         if (bounds is not Rect r) return;
+        if (it.Kind == ToolKind.Range)
+        {
+            // A handle on the edge: drag it (or anywhere on the edge) to change the size.
+            if (RangeHandle(it, out var h))
+            {
+                dc.DrawEllipse(Brushes.White, new Pen(Freeze(new SolidColorBrush(it.Color)), 2.5), h, 6.5, 6.5);
+                if (resizing)
+                {
+                    var at = resizeCursor == default ? h : resizeCursor;
+                    Label(dc, $"{it.Radius:0} units", new Point(at.X, at.Y + 16), 13);
+                }
+            }
+            return;
+        }
         r.Inflate(8 + it.Thickness / 2, 8 + it.Thickness / 2);
         dc.DrawRoundedRectangle(null, SelectPen, r, 4, 4);
     }
@@ -1586,8 +1722,9 @@ public sealed class DrawCanvas : FrameworkElement
                     : $"  ·  notes from {AppState.FormatTime(t)} on";
             string tool = S.Tool switch
             {
-                ToolKind.Select => "  ·  drag to move, scroll to resize",
+                ToolKind.Select => "  ·  drag to move, drag a circle's edge to resize",
                 ToolKind.Laser => "  ·  laser fades",
+                var k when CanFade(k) && S.Settings.FadingInk => $"  ·  fading ink ({S.Settings.FadeSeconds:0.#}s)",
                 ToolKind.Ping => "  ·  click to ping",
                 ToolKind.Range when S.Settings.RangeFollow => "  ·  circles follow the camera-locked champion",
                 _ => "",

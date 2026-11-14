@@ -12,7 +12,8 @@ public enum Space { Screen, World }
 /// <summary>Where new drawings go. Auto = on the map when a replay is open, otherwise on screen.</summary>
 public enum SpaceMode { Auto, Map, Screen }
 
-public enum MarkerKind { Ward, ControlWard, Danger, Missing, OnMyWay, Target, Objective, BlueDot, RedDot }
+public enum MarkerKind { Ward, ControlWard, Danger, Missing, OnMyWay, Target, Objective, BlueDot, RedDot,
+    Sweep, Teleport, Flash, Recall, Dragon, Baron, Herald, Grubs, FarsightWard }
 
 /// <summary>When a shortcut is active.</summary>
 public enum HotkeyScope { Drawing, League, Everywhere }

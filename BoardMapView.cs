@@ -104,8 +104,8 @@ public sealed class BoardMapView : FrameworkElement, IBoardView
     // ---------------------------------------------------------------- images
 
     static readonly Dictionary<string, (BitmapSource Color, BitmapSource Gray)?> icons = new();
-    static BitmapSource? mapArt, mapGray;
-    static bool mapRequested;
+    /// <summary>Map art per rift look ("base", "ocean", …); null while loading or if it couldn't be had.</summary>
+    static readonly Dictionary<string, (BitmapSource Color, BitmapSource Gray)?> arts = new();
 
     static (BitmapSource, BitmapSource) Load(string path)
     {
@@ -132,16 +132,25 @@ public sealed class BoardMapView : FrameworkElement, IBoardView
         catch (Exception ex) { AppSettings.LogError(ex); }
     }
 
-    async void RequestMap()
+    async void RequestArt(string variant)
     {
-        if (mapRequested) return;
-        mapRequested = true;
+        if (arts.ContainsKey(variant)) return;
+        arts[variant] = null;
         try
         {
-            var path = await DataDragon.MapImageAsync();
-            if (path != null) { (mapArt, mapGray) = Load(path); InvalidateVisual(); }
+            var path = await MapArt.GetAsync(variant);
+            if (path != null) { arts[variant] = Load(path); InvalidateVisual(); }
         }
-        catch (Exception ex) { AppSettings.LogError(ex); mapRequested = false; }
+        catch (Exception ex) { AppSettings.LogError(ex); }
+    }
+
+    /// <summary>The art for the rift's look at this moment (falls back to the plain map while an elemental one loads).</summary>
+    (BitmapSource Color, BitmapSource Gray)? ArtFor(string variant)
+    {
+        RequestArt("base");
+        if (variant != "base") RequestArt(variant);
+        if (arts.TryGetValue(variant, out var a) && a != null) return a;
+        return arts.TryGetValue("base", out var b) ? b : null;
     }
 
     // ---------------------------------------------------------------- structures
@@ -191,6 +200,164 @@ public sealed class BoardMapView : FrameworkElement, IBoardView
         foreach (var d in destroyed[i])
             if (d <= t && (Structures[i].Kind != Building.Inhibitor || t < d + 300)) return false;
         return true;
+    }
+
+    // ---------------------------------------------------------------- camps, plates, wards, jungle routes
+
+    /// <summary>The rift's look shown right now ("base" or an element), for the window's status.</summary>
+    public string Variant { get; private set; } = "base";
+    public bool ShowWards { get; set; } = true;
+    public bool ShowJungle { get; set; }
+
+    static readonly Color CampColor = Color.FromRgb(214, 190, 120), ScuttleColor = Color.FromRgb(120, 220, 200);
+
+    /// <summary>Jungle camps like League's minimap: a small marker, with a countdown before they first spawn.</summary>
+    void DrawCamps(DrawingContext dc, GameTimeline g, double t, double r)
+    {
+        double size = Math.Max(4, r * 0.3);
+        foreach (var c in RiftInsights.Camps)
+        {
+            var v = WorldToView(c.Pos);
+            bool scuttle = c.Side == 0;
+            var col = scuttle ? ScuttleColor : CampColor;
+            bool waiting = t < c.FirstSpawn;
+            var fill = new SolidColorBrush(Color.FromArgb(waiting ? (byte)110 : (byte)215, 24, 26, 30));
+            var pen = new Pen(new SolidColorBrush(Color.FromArgb(waiting ? (byte)120 : (byte)220, col.R, col.G, col.B)), Math.Max(1.2, size * 0.22));
+            if (scuttle)
+            {
+                // A diamond for the scuttle crab.
+                var geo = new StreamGeometry();
+                using (var ctx = geo.Open())
+                {
+                    ctx.BeginFigure(new Point(v.X, v.Y - size * 1.15), true, true);
+                    ctx.PolyLineTo(new[] { new Point(v.X + size * 1.15, v.Y), new Point(v.X, v.Y + size * 1.15), new Point(v.X - size * 1.15, v.Y) }, true, true);
+                }
+                dc.DrawGeometry(fill, pen, geo);
+            }
+            else
+            {
+                bool buff = c.Short is "Blue" or "Red";
+                dc.DrawEllipse(fill, pen, v, size, size);
+                if (buff) dc.DrawEllipse(new SolidColorBrush(c.Short == "Blue" ? Color.FromRgb(80, 160, 255) : Color.FromRgb(255, 90, 70)), null, v, size * 0.45, size * 0.45);
+            }
+            if (waiting && Zoom >= 1.2 && c.FirstSpawn - t < 60)
+                Label(dc, Objectives.Clock(c.FirstSpawn - t), new Point(v.X, v.Y + size + 2), Math.Clamp(r * 0.45, 9, 12), true, col);
+        }
+    }
+
+    /// <summary>Turret plates left on each outer turret (they all fall off at 14:00), as pips under the tower.</summary>
+    void DrawPlates(DrawingContext dc, GameTimeline g, double t, double r)
+    {
+        if (t >= RiftInsights.PlatesFall) return;
+        var lost = RiftInsights.PlatesLost(g, t);
+        double pip = Math.Max(2.2, r * 0.13), gap = pip * 0.7;
+        foreach (var (_, blue, red) in RiftInsights.LaneTowers)
+            foreach (var (team, outer) in new[] { (100, blue[0]), (200, red[0]) })
+            {
+                int i = Array.FindIndex(Structures, x => x.P == outer);
+                if (i >= 0 && !StructureUp(i, t)) continue;
+                int left = RiftInsights.PlatesPerTurret - lost.GetValueOrDefault(outer);
+                var v = WorldToView(outer);
+                var c = team == 100 ? BlueTeam : RedTeam;
+                double total = RiftInsights.PlatesPerTurret * pip * 2 + (RiftInsights.PlatesPerTurret - 1) * gap;
+                double x0 = v.X - total / 2 + pip, y = v.Y + r * 0.42 + pip * 2.2;
+                dc.DrawRoundedRectangle(new SolidColorBrush(Color.FromArgb(190, 12, 14, 18)), null,
+                    new Rect(x0 - pip * 1.8, y - pip * 1.8, total + pip * 1.6, pip * 3.6), pip * 1.4, pip * 1.4);
+                for (int k = 0; k < RiftInsights.PlatesPerTurret; k++)
+                {
+                    var at = new Point(x0 + k * (pip * 2 + gap), y);
+                    if (k < left) dc.DrawEllipse(new SolidColorBrush(c), null, at, pip, pip);
+                    else dc.DrawEllipse(null, new Pen(new SolidColorBrush(Color.FromArgb(150, 160, 160, 170)), 1), at, pip * 0.8, pip * 0.8);
+                }
+            }
+    }
+
+    static Color WardColor(WardInfo w) => w.IsControl ? Color.FromRgb(255, 79, 163) : w.IsFarsight ? Color.FromRgb(64, 156, 255) : Color.FromRgb(255, 214, 10);
+
+    /// <summary>
+    /// Wards out at this moment: a small eye where the owner stood when placing it (dashed if that spot is only an
+    /// estimate), its vision area, and how long it has left. Recently cleared wards show a cross for a few seconds.
+    /// </summary>
+    void DrawWards(DrawingContext dc, GameTimeline g, double t, double r)
+    {
+        double size = Math.Max(4.5, r * 0.36);
+        foreach (var w in RiftInsights.Wards(g))
+        {
+            if (w.KilledAt is double k && t >= k && t < k + 8)
+            {
+                var kv = WorldToView(w.Pos);
+                byte ka = (byte)(220 * (1 - (t - k) / 8));
+                var xp = new Pen(new SolidColorBrush(Color.FromArgb(ka, 230, 230, 230)), Math.Max(1.5, size * 0.3)) { StartLineCap = PenLineCap.Round, EndLineCap = PenLineCap.Round };
+                dc.DrawLine(xp, new Point(kv.X - size, kv.Y - size), new Point(kv.X + size, kv.Y + size));
+                dc.DrawLine(xp, new Point(kv.X + size, kv.Y - size), new Point(kv.X - size, kv.Y + size));
+                continue;
+            }
+            if (!w.AliveAt(t)) continue;
+            var v = WorldToView(w.Pos);
+            var col = WardColor(w);
+            var team = w.Team == 100 ? BlueTeam : RedTeam;
+            double vis = w.Vision * Scale;
+            dc.DrawEllipse(new SolidColorBrush(Color.FromArgb(16, team.R, team.G, team.B)), new Pen(new SolidColorBrush(Color.FromArgb(55, team.R, team.G, team.B)), 1), v, vis, vis);
+
+            var ring = new Pen(new SolidColorBrush(team), Math.Max(1.4, size * 0.28));
+            if (!w.PosKnown) ring.DashStyle = new DashStyle(new[] { 1.5, 1.2 }, 0);
+            dc.DrawEllipse(new SolidColorBrush(col), ring, v, size, size);
+            dc.DrawEllipse(Brushes.White, null, v, size * 0.55, size * 0.32);
+            dc.DrawEllipse(new SolidColorBrush(Color.FromRgb(18, 18, 22)), null, v, size * 0.2, size * 0.2);
+
+            // Time left, as an arc around timed wards.
+            if (!double.IsInfinity(w.Expires))
+            {
+                double frac = Math.Clamp((w.Expires - t) / (w.Expires - w.Placed), 0, 1);
+                if (frac < 0.999) dc.DrawGeometry(null, new Pen(Brushes.White, Math.Max(1.2, size * 0.22)), Arc(v, size + size * 0.45, frac));
+            }
+        }
+    }
+
+    static Geometry Arc(Point c, double radius, double frac)
+    {
+        double a0 = -Math.PI / 2, a1 = a0 + frac * Math.PI * 2;
+        var g = new StreamGeometry();
+        using (var ctx = g.Open())
+        {
+            ctx.BeginFigure(new Point(c.X + radius * Math.Cos(a0), c.Y + radius * Math.Sin(a0)), false, false);
+            ctx.ArcTo(new Point(c.X + radius * Math.Cos(a1), c.Y + radius * Math.Sin(a1)), new Size(radius, radius), 0, frac > 0.5, SweepDirection.Clockwise, true, false);
+        }
+        g.Freeze();
+        return g;
+    }
+
+    /// <summary>Each jungler's first clear: their path and numbered camps with the time they got there.</summary>
+    void DrawJungleRoutes(DrawingContext dc, GameTimeline g, double r)
+    {
+        var junglers = RiftInsights.Junglers(g);
+        if (SelectedId is int sid && junglers.Any(j => j.Id == sid)) junglers = junglers.Where(j => j.Id == sid).ToList();
+        var tracks = R.Tracks;
+        foreach (var j in junglers)
+        {
+            var c = j.Team == 100 ? BlueTeam : RedTeam;
+            if (tracks != null)
+            {
+                var path = CleanPath(tracks.Samples(j.Id, 60, RiftInsights.RouteUntil));
+                var pen = new Pen(new SolidColorBrush(Color.FromArgb(170, c.R, c.G, c.B)), Math.Max(2, r * 0.14))
+                    { StartLineCap = PenLineCap.Round, EndLineCap = PenLineCap.Round, DashStyle = new DashStyle(new[] { 2.0, 1.6 }, 0) };
+                for (int i = 1; i < path.Count; i++)
+                {
+                    double dt = path[i].T - path[i - 1].T;
+                    if (dt > 5 || (path[i].P - path[i - 1].P).Length > ChampionTracker.MaxRunSpeed * dt + 450) continue;
+                    dc.DrawLine(pen, WorldToView(path[i - 1].P), WorldToView(path[i].P));
+                }
+            }
+            foreach (var visit in RiftInsights.Route(g, j.Id))
+            {
+                var v = WorldToView(visit.Camp.Pos);
+                double br = Math.Max(8, r * 0.52);
+                dc.DrawEllipse(new SolidColorBrush(c), new Pen(Brushes.White, 1.6), v, br, br);
+                var num = Text(visit.Step.ToString(CultureInfo.InvariantCulture), br * 1.15, Brushes.White, Bold);
+                dc.DrawText(num, new Point(v.X - num.Width / 2, v.Y - num.Height / 2));
+                Label(dc, $"{visit.Camp.Short} {RiftInsights.Clock(visit.Arrived)}", new Point(v.X, v.Y + br + 2), Math.Clamp(r * 0.5, 10, 13), true, c);
+            }
+        }
     }
 
     // ---------------------------------------------------------------- objective timers
@@ -405,33 +572,37 @@ public sealed class BoardMapView : FrameworkElement, IBoardView
 
     void RenderMap(DrawingContext dc)
     {
-        RequestMap();
         double s = Scale;
         var o = Origin;
         var mapRect = new Rect(o.X, o.Y, W.Width * s, W.Height * s);
         RenderOptions.SetBitmapScalingMode(this, BitmapScalingMode.HighQuality);
-        if (mapArt != null)
+        var game = R.Game;
+        double t = Now;
+        Variant = game != null ? MapArt.VariantAt(game, t) : "base";
+        if (ArtFor(Variant) is { } art)
         {
             if (CleanMap)
             {
                 dc.PushOpacity(0.38);
-                dc.DrawImage(mapGray!, mapRect);
+                dc.DrawImage(art.Gray, mapRect);
                 dc.Pop();
             }
-            else dc.DrawImage(mapArt, mapRect);
+            else dc.DrawImage(art.Color, mapRect);
         }
         else dc.DrawRectangle(null, new Pen(Brushes.DimGray, 1), mapRect);
 
         placed.Clear();
-        var game = R.Game;
         if (game == null) return;
-        double t = Now;
         double r = TokenRadius;
 
+        DrawCamps(dc, game, t, r);
         if (structuresFor != game) MatchBuildings(game);
         for (int i = 0; i < Structures.Length; i++) DrawStructure(dc, Structures[i].Team, Structures[i].Kind, WorldToView(Structures[i].P), r, StructureUp(i, t));
+        DrawPlates(dc, game, t, r);
 
         DrawInhibitorTimers(dc, t, r);
+        if (ShowWards) DrawWards(dc, game, t, r);
+        if (ShowJungle) DrawJungleRoutes(dc, game, r);
         DrawEvents(dc, game, t, r);
         if (ShowObjectives) DrawObjectives(dc, game, t, r);
         if (PathMode != BoardPathMode.Off) DrawPaths(dc, game, t, r);

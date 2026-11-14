@@ -48,7 +48,7 @@ public sealed class RiftBoardWindow : Window
     readonly StackPanel drawTools = new() { Orientation = Orientation.Horizontal, Visibility = Visibility.Collapsed };
     readonly ToggleButton linkBtn = new(), drawBtn = new(), cleanBtn = new(), trailBtn = new();
     readonly Button playBtn = new();
-    readonly ToggleButton timersBtn = new();
+    readonly ToggleButton timersBtn = new(), wardsBtn = new(), jungleBtn = new();
     readonly Button pathsBtn = new();
     readonly ComboBox speedBox = new();
     readonly Button colorBtn = new();
@@ -107,6 +107,8 @@ public sealed class RiftBoardWindow : Window
         map.CleanMap = S.Settings.BoardCleanMap;
         map.Trails = S.Settings.BoardTrails;
         map.ShowObjectives = S.Settings.BoardTimers;
+        map.ShowWards = S.Settings.BoardWards;
+        map.ShowJungle = S.Settings.BoardJungle;
         map.PathMode = Enum.TryParse<BoardPathMode>(S.Settings.BoardPathMode, out var pm) ? pm : BoardPathMode.Off;
         map.PathWindow = S.Settings.BoardPathWindow;
         timeline.TimeSource = Now;
@@ -284,6 +286,10 @@ public sealed class RiftBoardWindow : Window
         trailBtn.Click += (_, _) => { map.Trails = trailBtn.IsChecked == true; S.Settings.BoardTrails = map.Trails; S.SaveSettingsSoon(); map.InvalidateVisual(); };
         SetupToggle(timersBtn, "", "Timers", "Dragon, Void Grubs, Herald and Baron spawn timers on the map, and inhibitor respawns", map.ShowObjectives);
         timersBtn.Click += (_, _) => { map.ShowObjectives = timersBtn.IsChecked == true; S.Settings.BoardTimers = map.ShowObjectives; S.SaveSettingsSoon(); map.InvalidateVisual(); RefreshSide(); };
+        SetupToggle(wardsBtn, "", "Wards", "Wards out at this moment, with their vision and time left.\nRiot's timeline says who placed a ward and when, not where, so each sits where its owner was standing (dashed when that spot is only estimated).", map.ShowWards);
+        wardsBtn.Click += (_, _) => { map.ShowWards = wardsBtn.IsChecked == true; S.Settings.BoardWards = map.ShowWards; S.SaveSettingsSoon(); map.InvalidateVisual(); };
+        SetupToggle(jungleBtn, "", "Jungle", "Each jungler's first clear: numbered camps with the time they got there, and their path (from the recorded minimap, first 4 minutes).\nSelect a jungler to see only them.", map.ShowJungle);
+        jungleBtn.Click += (_, _) => { map.ShowJungle = jungleBtn.IsChecked == true; S.Settings.BoardJungle = map.ShowJungle; S.SaveSettingsSoon(); map.InvalidateVisual(); };
         pathsBtn.Margin = new Thickness(2, 0, 2, 0);
         Flat(pathsBtn);
         pathsBtn.ToolTip = "Paths and heatmap: where champions went, or where they spent their time.\nSelect a champion to see only them; otherwise everyone is shown.";
@@ -292,6 +298,8 @@ public sealed class RiftBoardWindow : Window
         right.Children.Add(cleanBtn);
         right.Children.Add(trailBtn);
         right.Children.Add(timersBtn);
+        right.Children.Add(wardsBtn);
+        right.Children.Add(jungleBtn);
         right.Children.Add(pathsBtn);
         right.Children.Add(MakeButton("", "Put dragged champions back where they really are", (_, _) => { map.Moved.Clear(); map.MovedAt = double.NaN; map.InvalidateVisual(); }, "Reset"));
         right.Children.Add(MakeButton("", "Fit the whole map in the window (double-click with the middle button does it too)", (_, _) => map.ResetView(), "Fit"));
@@ -886,6 +894,9 @@ public sealed class RiftBoardWindow : Window
         side.Children.Add(timersPanel);
         BuildMatchup();
         side.Children.Add(matchupPanel);
+        side.Children.Add(lanesPanel);
+        side.Children.Add(junglePanel);
+        side.Children.Add(wardsPanel);
         side.Children.Add(objectives);
         side.Children.Add(details);
     }
@@ -1001,8 +1012,135 @@ public sealed class RiftBoardWindow : Window
 
         RefreshTimers(g, t);
         RefreshMatchup();
+        RefreshLanes(g, t);
+        RefreshJungle(g);
+        RefreshWards(g, t);
         RefreshObjectives(g, t);
         RefreshDetails(g, t);
+    }
+
+    // ---------------------------------------------------------------- lanes, jungle start, wards (side panel)
+
+    readonly StackPanel lanesPanel = new() { Margin = new Thickness(0, 12, 0, 0) };
+    readonly StackPanel junglePanel = new() { Margin = new Thickness(0, 12, 0, 0) };
+    readonly StackPanel wardsPanel = new() { Margin = new Thickness(0, 12, 0, 0) };
+    string lanesSig = "", jungleSig = "", wardsSig = "";
+
+    static TextBlock Heading(string text, string? tip = null) =>
+        new() { Text = text, Foreground = Dim, FontWeight = FontWeights.Bold, FontSize = 12, Margin = new Thickness(2, 0, 0, 4), ToolTip = tip };
+
+    static UIElement TowerPips(bool[] up, Color team, bool reverse)
+    {
+        var sp = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        var order = reverse ? up.Reverse().ToArray() : up;
+        string[] names = { "outer", "inner", "inhibitor" };
+        for (int i = 0; i < order.Length; i++)
+        {
+            int real = reverse ? order.Length - 1 - i : i;
+            sp.Children.Add(new Border
+            {
+                Width = 11, Height = 11, Margin = new Thickness(1.5, 0, 1.5, 0), CornerRadius = new CornerRadius(2.5),
+                Background = new SolidColorBrush(order[i] ? team : Color.FromArgb(70, 120, 120, 130)),
+                BorderBrush = new SolidColorBrush(order[i] ? Color.FromArgb(200, 255, 255, 255) : Color.FromArgb(90, 200, 200, 200)), BorderThickness = new Thickness(1),
+                ToolTip = $"{names[real]} turret {(order[i] ? "standing" : "destroyed")}",
+            });
+        }
+        return sp;
+    }
+
+    void RefreshLanes(GameTimeline g, double t)
+    {
+        var lanes = RiftInsights.Lanes(g, t);
+        bool plates = t < RiftInsights.PlatesFall;
+        string sig = string.Join("|", lanes.Select(l => $"{l.BluePlatesTaken},{l.RedPlatesTaken},{string.Join("", l.BlueTowersUp)},{string.Join("", l.RedTowersUp)}")) + plates;
+        if (sig == lanesSig) return;
+        lanesSig = sig;
+        lanesPanel.Children.Clear();
+        lanesPanel.Children.Add(Heading("LANES", "Turrets standing in each lane (outer, inner, inhibitor) and turret plates each team has taken. Plates fall off at 14:00."));
+        var grid = new Grid();
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(40) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        for (int i = 0; i < lanes.Count; i++)
+        {
+            var l = lanes[i];
+            grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(24) });
+            void Put(UIElement e, int col) { Grid.SetRow(e, i); Grid.SetColumn(e, col); grid.Children.Add(e); }
+            Put(new TextBlock { Text = l.Lane, Foreground = Fg, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center }, 0);
+            Put(TowerPips(l.BlueTowersUp, BlueTeam, false), 1);
+            var mid = new TextBlock { HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, FontSize = 12 };
+            if (plates || l.BluePlatesTaken + l.RedPlatesTaken > 0)
+            {
+                mid.Inlines.Add(new System.Windows.Documents.Run($"{l.BluePlatesTaken}") { Foreground = new SolidColorBrush(BlueTeam), FontWeight = FontWeights.Bold });
+                mid.Inlines.Add(new System.Windows.Documents.Run("  plates  ") { Foreground = Dim });
+                mid.Inlines.Add(new System.Windows.Documents.Run($"{l.RedPlatesTaken}") { Foreground = new SolidColorBrush(RedTeam), FontWeight = FontWeights.Bold });
+                mid.ToolTip = $"Blue took {l.BluePlatesTaken} of red's {RiftInsights.PlatesPerTurret} {l.Lane.ToLowerInvariant()} plates; red took {l.RedPlatesTaken} of blue's." + (plates ? "" : " Plates fell off at 14:00.");
+            }
+            Put(mid, 2);
+            Put(TowerPips(l.RedTowersUp, RedTeam, true), 3);
+        }
+        lanesPanel.Children.Add(grid);
+        if (plates) lanesPanel.Children.Add(new TextBlock { Text = $"Plates fall off in {Objectives.Clock(RiftInsights.PlatesFall - t)}.", Foreground = Dim, FontSize = 11, Margin = new Thickness(2, 2, 0, 0) });
+    }
+
+    void RefreshJungle(GameTimeline g)
+    {
+        var junglers = RiftInsights.Junglers(g);
+        var routes = junglers.Select(j => (j, RiftInsights.Route(g, j.Id))).ToList();
+        string sig = string.Join("|", routes.Select(x => x.j.Id + ":" + string.Join(",", x.Item2.Select(v => $"{v.Camp.Short}{v.Arrived:0}"))));
+        if (sig == jungleSig) return;
+        jungleSig = sig;
+        junglePanel.Children.Clear();
+        junglePanel.Children.Add(Heading("JUNGLE START", "Each jungler's camps in the first four minutes, from the recorded minimap positions. Turn on Jungle (top bar) to see the route on the map."));
+        foreach (var (j, route) in routes)
+        {
+            var tb = new TextBlock { TextWrapping = TextWrapping.Wrap, FontSize = 12, Margin = new Thickness(2, 1, 0, 3), Cursor = Cursors.Hand };
+            tb.Inlines.Add(new System.Windows.Documents.Run(j.ChampionName + "  ") { Foreground = new SolidColorBrush(j.Team == 100 ? BlueTeam : RedTeam), FontWeight = FontWeights.SemiBold });
+            if (route.Count == 0)
+                tb.Inlines.Add(new System.Windows.Documents.Run("not recorded yet: play 1:30–4:00 of the replay with the minimap visible") { Foreground = Dim });
+            else
+            {
+                string side(JungleCamp c) => c.Side == 0 ? "" : c.Side == j.Team ? "" : " (enemy)";
+                tb.Inlines.Add(new System.Windows.Documents.Run(string.Join("  →  ", route.Select(v => $"{v.Camp.Short}{side(v.Camp)} {RiftInsights.Clock(v.Arrived)}"))));
+            }
+            var id = j.Id;
+            tb.MouseLeftButtonUp += (_, _) =>
+            {
+                map.SelectedId = id;
+                if (!map.ShowJungle) { map.ShowJungle = true; jungleBtn.IsChecked = true; jungleBtn.Background = ButtonOn; S.Settings.BoardJungle = true; S.SaveSettingsSoon(); }
+                map.InvalidateVisual();
+                RefreshSide();
+            };
+            junglePanel.Children.Add(tb);
+        }
+    }
+
+    void RefreshWards(GameTimeline g, double t)
+    {
+        var wards = RiftInsights.Wards(g);
+        var placedSoFar = wards.Where(w => w.Placed <= t).ToList();
+        string sig = $"{placedSoFar.Count}|{wards.Count(w => w.AliveAt(t))}|{wards.Count(w => w.KilledAt <= t)}";
+        if (sig == wardsSig) return;
+        wardsSig = sig;
+        wardsPanel.Children.Clear();
+        wardsPanel.Children.Add(Heading("WARDS", "From Riot's timeline (it needs your Riot API key, or a game loaded from the client). Out = on the map now."));
+        if (wards.Count == 0)
+        {
+            wardsPanel.Children.Add(new TextBlock { Text = "No ward data for this game. Add your Riot API key in ⚙ to get wards.", Foreground = Dim, FontSize = 11.5, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(2, 0, 0, 0) });
+            return;
+        }
+        foreach (int team in new[] { 100, 200 })
+        {
+            var mine = placedSoFar.Where(w => w.Team == team).ToList();
+            int outNow = mine.Count(w => w.AliveAt(t));
+            int control = mine.Count(w => w.IsControl);
+            int cleared = wards.Count(w => w.Team != team && w.KilledAt <= t);
+            var tb = new TextBlock { FontSize = 12, Margin = new Thickness(2, 1, 0, 1), TextWrapping = TextWrapping.Wrap };
+            tb.Inlines.Add(new System.Windows.Documents.Run(team == 100 ? "Blue  " : "Red  ") { Foreground = new SolidColorBrush(team == 100 ? BlueTeam : RedTeam), FontWeight = FontWeights.SemiBold });
+            tb.Inlines.Add(new System.Windows.Documents.Run($"{mine.Count} placed ({control} control) · {outNow} out now · cleared {cleared}"));
+            wardsPanel.Children.Add(tb);
+        }
     }
 
     void RefreshObjectives(GameTimeline g, double t)
@@ -1057,6 +1195,9 @@ public sealed class RiftBoardWindow : Window
             details.Children.Add(dp);
         }
         Line("Level", st.Level.ToString(CultureInfo.InvariantCulture));
+        var myWards = RiftInsights.Wards(g).Where(w => w.Creator == id && w.Placed <= t).ToList();
+        if (RiftInsights.Wards(g).Count > 0)
+            Line("Wards placed / cleared", $"{myWards.Count} / {RiftInsights.Wards(g).Count(w => w.KilledBy == id && w.KilledAt <= t)}");
         Line("Position", st.Dead ? $"dead · back in {Math.Ceiling(st.RespawnIn)}s" : st.Quality switch { PosQuality.Tracked => "from the minimap", PosQuality.LastSeen => "where last seen on the minimap", _ => "estimated from the timeline" });
         if (pf != null)
         {
@@ -1095,6 +1236,20 @@ public sealed class RiftBoardWindow : Window
     internal static RiftBoardWindow? Instance => instance;
 
     internal void TestSelect(int? id) { map.SelectedId = id; RefreshAll(); map.InvalidateVisual(); }
+
+    internal void TestLayers(bool wards, bool jungle, bool timers)
+    {
+        map.ShowWards = wards; map.ShowJungle = jungle; map.ShowObjectives = timers;
+        RefreshAll();
+        map.InvalidateVisual();
+    }
+
+    internal void TestView(double zoom, Point centre) { map.SetView(zoom, centre); ink.InvalidateVisual(); }
+
+    internal string MapVariant => map.Variant;
+    internal DrawCanvas TestInk => ink;
+    internal Point TestWorldToView(Point w) => map.WorldToView(w);
+    internal void TestDrawing(bool on) => SetDrawing(on);
 
     internal void TestPaths(BoardPathMode mode, double window, string lane)
     {

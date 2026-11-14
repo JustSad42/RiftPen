@@ -138,8 +138,34 @@ public partial class ToolbarWindow : Window
 
     void BuildMarkerList()
     {
+        // Stamps in three columns: vision + spells, objectives, calls.
+        MarkerList.Orientation = Orientation.Horizontal;
+        var columns = new Dictionary<string, StackPanel>();
+        StackPanel Column(string group)
+        {
+            string col = group is "Vision" or "Spells" ? "a" : group == "Objectives" ? "b" : "c";
+            if (!columns.TryGetValue(col, out var panel))
+            {
+                panel = new StackPanel { MinWidth = 180, Margin = new Thickness(0, 0, col == "c" ? 0 : 6, 0) };
+                columns[col] = panel;
+                MarkerList.Children.Add(panel);
+            }
+            return panel;
+        }
+        string? lastGroup = null;
         foreach (var (kind, name) in MarkerRenderer.All)
         {
+            var group = MarkerRenderer.Group(kind);
+            var target = Column(group);
+            if (group != lastGroup)
+            {
+                target.Children.Add(new TextBlock
+                {
+                    Text = group.ToUpperInvariant(), FontFamily = new FontFamily("Segoe UI"), FontSize = 10.5, FontWeight = FontWeights.SemiBold,
+                    Foreground = new SolidColorBrush(Color.FromArgb(150, 255, 255, 255)), Margin = new Thickness(10, target.Children.Count == 0 ? 4 : 10, 0, 3),
+                });
+                lastGroup = group;
+            }
             var row = new StackPanel { Orientation = Orientation.Horizontal };
             row.Children.Add(new MarkerIcon { Kind = kind, Width = 24, Height = 24, Margin = new Thickness(0, 0, 8, 0) });
             row.Children.Add(new TextBlock { Text = name, VerticalAlignment = VerticalAlignment.Center, FontFamily = new FontFamily("Segoe UI"), FontSize = 13 });
@@ -150,7 +176,7 @@ public partial class ToolbarWindow : Window
                 S.SelectTool(ToolKind.Marker);
                 MarkerPopup.IsOpen = false;
             };
-            MarkerList.Children.Add(b);
+            target.Children.Add(b);
         }
     }
 
@@ -338,7 +364,7 @@ public partial class ToolbarWindow : Window
         [ToolKind.Rectangle] = "Rectangle",
         [ToolKind.Ellipse] = "Circle. On the map, drag outward from the center",
         [ToolKind.Text] = "Text: click, type, press Enter",
-        [ToolKind.Marker] = "League markers",
+        [ToolKind.Marker] = "Stamps: wards, spells, objectives and calls",
         [ToolKind.Range] = "Range circles: vision, XP, tower, spells, champion abilities…",
     };
 

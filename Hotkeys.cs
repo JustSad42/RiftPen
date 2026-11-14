@@ -145,6 +145,7 @@ public static class HotkeyCatalog
             new("tool:Text", "Text", "Tools", HotkeyBinding.Of(Key.T)),
             new("tool:Marker", "Marker", "Tools", HotkeyBinding.Of(Key.K)),
             new("tool:Range", "Range circle (last used)", "Tools", HotkeyBinding.Of(Key.V)),
+            new("fadingInk", "Fading ink on/off (strokes disappear on their own)", "Tools", HotkeyBinding.Of(Key.I)),
             new("rangeFollow", "Range circles follow locked champion on/off", "Tools", HotkeyBinding.Of(Key.F)),
             new("sizeDown", "Smaller", "Tools", HotkeyBinding.Of(Key.OemOpenBrackets)),
             new("sizeUp", "Bigger", "Tools", HotkeyBinding.Of(Key.OemCloseBrackets)),

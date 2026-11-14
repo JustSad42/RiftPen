@@ -216,6 +216,16 @@
                                Text="RiftPen lives in the notification area (system tray) too: left-click its icon to show or hide the toolbar, right-click for more."/>
 
                     <Separator Margin="0,10"/>
+                    <TextBlock Text="Updates" Style="{StaticResource H}"/>
+                    <CheckBox Content="Update RiftPen automatically (new versions download in the background and install when you quit)" IsChecked="{Binding AutoUpdate}"/>
+                    <WrapPanel Margin="0,6,0,0">
+                        <Button Content="Check for updates" Click="CheckUpdates_Click" Margin="0,0,8,0"/>
+                        <Button x:Name="RestartUpdateBtn" Content="Restart to update" Click="RestartUpdate_Click" Margin="0,0,8,0" Visibility="Collapsed"/>
+                        <Button Content="Release notes" Click="ReleaseNotes_Click"/>
+                    </WrapPanel>
+                    <TextBlock x:Name="UpdateText" Style="{StaticResource Note}" Margin="0,6,0,4" TextWrapping="Wrap"/>
+
+                    <Separator Margin="0,10"/>
                     <TextBlock Text="Drawing" Style="{StaticResource H}"/>
                     <Grid>
                         <Grid.ColumnDefinitions>
@@ -247,11 +257,23 @@
                                 Value="{Binding SpotlightDim}"/>
                         <TextBlock Grid.Row="1" Grid.Column="2" Text="{Binding Value, ElementName=SpotDimSlider, StringFormat={}{0:P0}}" VerticalAlignment="Center" Margin="8,0,0,0"/>
                     </Grid>
+                    <CheckBox Content="Fading ink: pen, highlighter and shapes disappear on their own (shortcut I)" IsChecked="{Binding FadingInk}" Click="WardVision_Click"/>
+                    <Grid Margin="22,0,0,4">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="148"/>
+                            <ColumnDefinition/>
+                            <ColumnDefinition Width="60"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="Fading ink stays for (s)" VerticalAlignment="Center"/>
+                        <Slider x:Name="FadeSlider" Grid.Column="1" Minimum="1" Maximum="20" Margin="0,4" IsSnapToTickEnabled="True" TickFrequency="0.5"
+                                Value="{Binding FadeSeconds}"/>
+                        <TextBlock Grid.Column="2" Text="{Binding Value, ElementName=FadeSlider, StringFormat={}{0:0.0}}" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                    </Grid>
                     <CheckBox Content="Hide map drawings when League isn't the focused window" IsChecked="{Binding HideWorldWhenLeagueNotFocused}"/>
                     <CheckBox Content="Hold the draw-mode key to open the tool wheel (a quick tap still turns drawing on/off)" IsChecked="{Binding WheelOnHold}"/>
                     <CheckBox Content="Collapse the toolbar when I'm not drawing" IsChecked="{Binding AutoCollapseToolbar}" Click="AutoCollapse_Click"/>
                     <CheckBox Content="Hide RiftPen from stream capture (OBS/Discord show your drawings, not the toolbar, notes bar or menus)" IsChecked="{Binding HideUiFromCapture}" Click="HideFromCapture_Click"/>
-                    <CheckBox Content="Ward markers on the map show their vision range (900 units)" IsChecked="{Binding WardVision}" Click="WardVision_Click"/>
+                    <CheckBox Content="Ward stamps on the map show their vision range (900 units, farsight 500)" IsChecked="{Binding WardVision}" Click="WardVision_Click"/>
                     <CheckBox Content="Smooth freehand strokes" IsChecked="{Binding SmoothStrokes}"/>
                     <CheckBox Content="Use pen pressure on drawing tablets" IsChecked="{Binding PenPressure}"/>
 

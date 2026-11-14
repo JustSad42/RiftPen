@@ -76,6 +76,7 @@ public partial class App : Application
             return;
         }
 
+        Updater.WaitForPrevious(e.Args); // just updated: let the old copy finish closing
         mutex = new Mutex(true, "RiftPen.SingleInstance", out bool first);
         if (!first)
         {
@@ -156,6 +157,9 @@ public partial class App : Application
 
         S.Replay.Start();
         RiftSession.I.Start(Dispatcher);
+
+        Updater.StartAutomatic();
+        if (e.Args.Contains("--updated")) S.Say($"RiftPen updated to version {Updater.CurrentText}.");
     }
 
     protected override void OnExit(ExitEventArgs e)
@@ -169,6 +173,7 @@ public partial class App : Application
             S.Settings.Save();
         }
         if (!selfTest) RiftSession.I.Stop();
+        if (!selfTest) Updater.ApplyOnExit();
         S.Replay.Dispose();
         mutex?.Dispose();
         base.OnExit(e);

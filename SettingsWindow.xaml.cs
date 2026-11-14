@@ -39,6 +39,8 @@ public partial class SettingsWindow : Window
         StartupBox.IsChecked = Startup.IsEnabled;
         StartMenuBox.IsChecked = StartMenu.Exists;
         BuildShortcuts();
+        Updater.StatusChanged += ShowUpdate;
+        ShowUpdate();
 
         timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(150) };
         timer.Tick += (_, _) => UpdateLive();
@@ -46,6 +48,7 @@ public partial class SettingsWindow : Window
         Closed += (_, _) =>
         {
             timer.Stop();
+            Updater.StatusChanged -= ShowUpdate;
             S.Hook?.CancelCapture();
             S.Settings.Save();
         };
@@ -53,6 +56,26 @@ public partial class SettingsWindow : Window
     }
 
     public void SelectTab(int index) => Tabs.SelectedIndex = index;
+
+    void ShowUpdate() => Dispatcher.BeginInvoke(() =>
+    {
+        UpdateText.Text = $"This is version {Updater.CurrentText}." + (Updater.Status.Length > 0 ? "  " + Updater.Status : "");
+        RestartUpdateBtn.Visibility = Updater.Ready != null ? Visibility.Visible : Visibility.Collapsed;
+    });
+
+    async void CheckUpdates_Click(object sender, RoutedEventArgs e) => await Updater.CheckAsync(manual: true);
+
+    void RestartUpdate_Click(object sender, RoutedEventArgs e)
+    {
+        S.Settings.Save();
+        if (!Updater.ApplyAndRestart()) ShowUpdate();
+    }
+
+    void ReleaseNotes_Click(object sender, RoutedEventArgs e)
+    {
+        try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(Updater.ReleasesPage) { UseShellExecute = true }); }
+        catch (Exception ex) { AppSettings.LogError(ex); }
+    }
 
     void Changed() => Dispatcher.BeginInvoke(() => S.NotifyChanged(), DispatcherPriority.Background);
 

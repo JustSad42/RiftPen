@@ -16,10 +16,13 @@ public sealed class TrayIcon : IDisposable
 
     public TrayIcon(Action toggleToolbar, Action toggleDraw, Action openSettings, Action quit, Action? toggleCapture = null, Func<bool>? captureHidden = null)
     {
+        var update = new WinForms.ToolStripMenuItem("Restart to update") { Visible = false, Font = new System.Drawing.Font(WinForms.Control.DefaultFont, System.Drawing.FontStyle.Bold) };
+        update.Click += (_, _) => Updater.ApplyAndRestart();
         startup = new WinForms.ToolStripMenuItem("Start with Windows") { CheckOnClick = true, Checked = Startup.IsEnabled };
         startup.Click += (_, _) => Startup.Set(startup.Checked);
 
         var menu = new WinForms.ContextMenuStrip();
+        menu.Items.Add(update);
         menu.Items.Add("Show / hide toolbar", null, (_, _) => toggleToolbar());
         menu.Items.Add("Draw mode on/off", null, (_, _) => toggleDraw());
         menu.Items.Add("Settings…", null, (_, _) => openSettings());
@@ -30,7 +33,13 @@ public sealed class TrayIcon : IDisposable
         menu.Items.Add(startup);
         menu.Items.Add(new WinForms.ToolStripSeparator());
         menu.Items.Add("Quit RiftPen", null, (_, _) => quit());
-        menu.Opening += (_, _) => { startup.Checked = Startup.IsEnabled; capture.Checked = captureHidden?.Invoke() == true; };
+        menu.Opening += (_, _) =>
+        {
+            startup.Checked = Startup.IsEnabled;
+            capture.Checked = captureHidden?.Invoke() == true;
+            update.Visible = Updater.Ready != null;
+            if (Updater.Ready is { } v) update.Text = $"Restart to update to {v.ToString(3)}";
+        };
 
         icon = new WinForms.NotifyIcon
         {

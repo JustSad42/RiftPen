@@ -441,6 +441,13 @@ public sealed class AppState
             case "spotlight":
                 Spotlight = !Spotlight;
                 return;
+            case "fadingInk":
+                Settings.FadingInk = !Settings.FadingInk;
+                Say(Settings.FadingInk
+                    ? $"Fading ink on: strokes disappear after {Settings.FadeSeconds:0.#} seconds."
+                    : "Fading ink off: strokes stay.");
+                Raise();
+                return;
             case "rangeFollow":
                 Settings.RangeFollow = !Settings.RangeFollow;
                 Say(Settings.RangeFollow
@@ -581,7 +588,7 @@ public sealed class AppState
         switch (it.Kind)
         {
             case ToolKind.Range:
-                it.Radius = Math.Clamp(it.Radius * factor, 10, 20000);
+                it.Radius = Math.Clamp(Math.Round(it.Radius * factor), 25, 8000);
                 break;
             case ToolKind.Text:
             case ToolKind.Marker:

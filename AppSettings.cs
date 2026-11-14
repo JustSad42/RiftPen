@@ -62,6 +62,10 @@ public sealed class AppSettings
     // Drawings
     public bool RestoreDrawings { get; set; } = true;
     public double LaserSeconds { get; set; } = 1.5;
+    /// <summary>Pen, highlighter and shape strokes fade away on their own (good for live commentary).</summary>
+    public bool FadingInk { get; set; }
+    /// <summary>How long fading ink stays before it fades, in seconds.</summary>
+    public double FadeSeconds { get; set; } = 4;
 
     // Minimap: x, y, width, height as fractions of the League window.
     public double[]? MinimapRect { get; set; }
@@ -96,6 +100,8 @@ public sealed class AppSettings
     public string? MinimapCfgSignature { get; set; }
     public bool AutoDetectMinimap { get; set; } = true;
     public bool StartMenuShortcutDone { get; set; }
+    /// <summary>Download new versions from GitHub in the background; they install when RiftPen quits.</summary>
+    public bool AutoUpdate { get; set; } = true;
 
     // Rift Board
     /// <summary>Optional Riot developer/personal API key: adds item purchases, wards, skill order and damage.</summary>
@@ -106,6 +112,8 @@ public sealed class AppSettings
     /// <summary>Board moves with the replay (off = sandbox).</summary>
     public bool BoardLinked { get; set; } = true;
     public bool BoardTimers { get; set; } = true;
+    public bool BoardWards { get; set; } = true;
+    public bool BoardJungle { get; set; }
     /// <summary>Off, Path or Heatmap (see BoardPathMode).</summary>
     public string BoardPathMode { get; set; } = "Off";
     /// <summary>How far back paths/heatmaps look, in seconds; 0 = whole game so far.</summary>

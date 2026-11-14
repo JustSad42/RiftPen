@@ -431,7 +431,9 @@ internal static class SelfTest
         Directory.CreateDirectory(folder);
         var log = new StringBuilder();
         AppState.I.AutosaveEnabled = false;
-        var file = new DirectoryInfo(GameLoader.CacheFolder).GetFiles("*.json").OrderByDescending(f => f.LastWriteTime).FirstOrDefault();
+        var want = Environment.GetEnvironmentVariable("RIFTPEN_TEST_GAME"); // pick a saved game other than the newest
+        var file = new DirectoryInfo(GameLoader.CacheFolder).GetFiles("*.json").Where(f => want == null || f.Name.Contains(want))
+            .OrderByDescending(f => f.LastWriteTime).FirstOrDefault();
         if (file == null) { File.WriteAllText(Path.Combine(folder, "boardtest.txt"), "No saved games."); return; }
         var game = System.Text.Json.JsonSerializer.Deserialize<GameTimeline>(await File.ReadAllTextAsync(file.FullName))!;
         var R = RiftSession.I;
@@ -461,6 +463,111 @@ internal static class SelfTest
         await Task.Delay(500);
         w.SnapshotSide(Path.Combine(folder, "board_side.png"));
         w.TestPaths(BoardPathMode.Off, 120, "TOP");
+
+        // Wards, plates and lanes, jungle routes, map art.
+        var wards = RiftInsights.Wards(game);
+        log.AppendLine($"Wards: {wards.Count} from the timeline, {wards.Count(x => x.PosKnown)} placed where the owner was tracked, " +
+                       $"{wards.Count(x => x.KilledAt != null)} matched to clears, {wards.Count(x => x.AliveAt(at))} out at {AppState.FormatTime(at)}");
+        foreach (var x in wards.Where(x => x.AliveAt(at)).Take(6))
+            log.AppendLine($"  {game.P(x.Creator)?.ChampionName} {x.Type} placed {AppState.FormatTime(x.Placed)} ends {(double.IsInfinity(x.Ends) ? "never" : AppState.FormatTime(x.Ends))} at ({x.Pos.X:0},{x.Pos.Y:0}) {(x.PosKnown ? "" : "(estimated)")}");
+        foreach (var tt in new[] { 420.0, 800, at })
+            log.AppendLine($"Lanes at {AppState.FormatTime(tt)}: " + string.Join("; ", RiftInsights.Lanes(game, tt).Select(l =>
+                $"{l.Lane} plates B{l.BluePlatesTaken}/R{l.RedPlatesTaken} towers B{string.Concat(l.BlueTowersUp.Select(u => u ? '1' : '0'))} R{string.Concat(l.RedTowersUp.Select(u => u ? '1' : '0'))}")));
+        foreach (var j in RiftInsights.Junglers(game))
+        {
+            var route = RiftInsights.Route(game, j.Id);
+            log.AppendLine($"Jungle start {j.ChampionName}: " + (route.Count == 0 ? "not recorded" : string.Join(" -> ", route.Select(v => $"{v.Camp.Short}({v.Camp.Side}) {AppState.FormatTime(v.Arrived)}"))));
+        }
+        var fake = new List<(double T, Point P)>();
+        void Walk(Point a, Point b, double t0, double t1) { for (double tt = t0; tt <= t1; tt += 0.2) fake.Add((tt, a + (b - a) * ((tt - t0) / Math.Max(0.01, t1 - t0)))); }
+        Walk(new Point(1200, 1200), new Point(7765, 4020), 60, 88);      // walk to red buff
+        Walk(new Point(7765, 4020), new Point(7790, 4060), 90, 112);     // take it
+        Walk(new Point(7790, 4060), new Point(8394, 2641), 112, 118);    // krugs
+        Walk(new Point(8394, 2641), new Point(8380, 2650), 118, 140);
+        Walk(new Point(8380, 2650), new Point(6983, 5487), 140, 152);    // raptors, passing nothing
+        Walk(new Point(6983, 5487), new Point(6990, 5480), 152, 165);
+        log.AppendLine("Made-up route: " + string.Join(" -> ", RiftInsights.RouteFrom(fake).Select(v => $"{v.Camp.Short} {AppState.FormatTime(v.Arrived)}")) + " (expect Red 1:30, Krugs, Raptors)");
+        log.AppendLine($"Rift look at the end: {MapArt.VariantAt(game, game.Length)}; drakes: {string.Join(", ", game.Events.Where(e => e.MonsterType == "DRAGON").Select(e => $"{e.MonsterSubType} {AppState.FormatTime(e.Time)}"))}");
+
+        w.TestSelect(null);
+        w.TestLayers(true, true, true);
+        w.TestSandbox(at);
+        await Task.Delay(400);
+        for (int i = 0; i < 40 && !File.Exists(Path.Combine(AppSettings.Folder, "maps", "map11_base_r2.png")); i++) await Task.Delay(250);
+        await Task.Delay(600);
+        w.Snapshot(Path.Combine(folder, "board_layers.png"));
+        w.TestSandbox(230);
+        await Task.Delay(800);
+        w.Snapshot(Path.Combine(folder, "board_early.png"));
+        w.TestView(4, new Point(2400, 2400));
+        await Task.Delay(500);
+        w.Snapshot(Path.Combine(folder, "board_zoom_base.png"));
+        w.TestView(3.2, new Point(9866, 4414));
+        w.TestSandbox(game.Length - 5);
+        await Task.Delay(400);
+        for (int i = 0; i < 40 && w.MapVariant != "base" && !Directory.GetFiles(Path.Combine(AppSettings.Folder, "maps"), $"map11_{w.MapVariant}_*.png").Any(); i++) await Task.Delay(250);
+        await Task.Delay(800);
+        log.AppendLine($"Board shows the {w.MapVariant} rift at the end");
+        w.Snapshot(Path.Combine(folder, "board_zoom_end.png"));
+        w.TestView(1, new Point(7375, 7430));
+        w.TestLayers(AppState.I.Settings.BoardWards, AppState.I.Settings.BoardJungle, AppState.I.Settings.BoardTimers);
+
+        // Resizing a range circle by dragging its edge, and fading ink.
+        {
+            var S2 = AppState.I;
+            w.TestDrawing(true);
+            S2.SelectTool(ToolKind.Select);
+            var circle = new DrawItem { Kind = ToolKind.Range, Space = Space.World, Color = Colors.Yellow, Thickness = 3, Radius = 900, Text = "Ward vision 900", Points = { new Point(7400, 7400) } };
+            w.TestDraw(circle);
+            var edge = w.TestWorldToView(new Point(7400 + 900, 7400));
+            var farther = w.TestWorldToView(new Point(7400 + 1400, 7400));
+            w.TestInk.TestDown(edge);
+            w.TestInk.TestMove(farther);
+            w.TestInk.TestUp();
+            double grown = circle.Radius;
+            S2.Undo();
+            log.AppendLine($"Drag circle edge: 900 -> {grown:0} (expect about 1400) {(Math.Abs(grown - 1400) < 40 ? "PASS" : "FAIL")}, undo -> {circle.Radius:0} {(circle.Radius == 900 ? "PASS" : "FAIL")}");
+            S2.RemoveItems(new List<DrawItem> { circle });
+
+            bool fadeBefore = S2.Settings.FadingInk;
+            double fadeSecs = S2.Settings.FadeSeconds;
+            S2.Settings.FadingInk = true;
+            S2.Settings.FadeSeconds = 1;
+            S2.SelectTool(ToolKind.Pen);
+            int itemsBefore = S2.Items.Count;
+            w.TestInk.TestDown(w.TestWorldToView(new Point(5000, 5000)));
+            for (int i = 1; i <= 10; i++) w.TestInk.TestMove(w.TestWorldToView(new Point(5000 + i * 150, 5000 + i * 60)));
+            w.TestInk.TestUp();
+            int fading = w.TestInk.FadingCount, itemsAfter = S2.Items.Count;
+            await Task.Delay(2200);
+            w.TestInk.TickBoard();
+            log.AppendLine($"Fading ink: not saved {(itemsAfter == itemsBefore ? "PASS" : "FAIL")}, shown {(fading == 1 ? "PASS" : "FAIL")}, gone after its time {(w.TestInk.FadingCount == 0 ? "PASS" : "FAIL")}");
+            S2.Settings.FadingInk = fadeBefore;
+            S2.Settings.FadeSeconds = fadeSecs;
+            S2.SelectTool(ToolKind.Select);
+            w.TestDrawing(false);
+        }
+
+        // Every stamp, big, for a visual check.
+        {
+            var dv = new DrawingVisual();
+            using (var dc = dv.RenderOpen())
+            {
+                dc.DrawRectangle(new SolidColorBrush(Color.FromRgb(40, 44, 52)), null, new Rect(0, 0, 6 * 96, 3 * 96));
+                int n = 0;
+                foreach (var (kind, _) in MarkerRenderer.All)
+                {
+                    MarkerRenderer.Draw(dc, kind, new Point(48 + n % 6 * 96, 48 + n / 6 * 96), 64, 1);
+                    n++;
+                }
+            }
+            var bmp = new RenderTargetBitmap(6 * 96, 3 * 96, 96, 96, PixelFormats.Pbgra32);
+            bmp.Render(dv);
+            var enc = new PngBitmapEncoder();
+            enc.Frames.Add(BitmapFrame.Create(bmp));
+            using var fs = File.Create(Path.Combine(folder, "stamps.png"));
+            enc.Save(fs);
+        }
 
         // Drawings that follow champions, and ward vision.
         var S = AppState.I;
