@@ -2,6 +2,8 @@
 
 An Epic Pen-style screen drawing tool for League of Legends. In **replays and spectator mode**, drawings stick to the map and to the replay timeline. Pan, zoom or scrub, and a circle around Baron stays around Baron and shows up again whenever you rewatch that moment.
 
+![Drawings on the Rift Board: an arrow, a ward with its vision range, a danger ping and a note](docs/screenshots/board-drawn.webp)
+
 **Install:** download `RiftPen.exe` from the [latest release](https://github.com/JustSad42/RiftPen/releases/latest), put it in a folder of its own and run it. It needs the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0). On first run RiftPen adds itself to the Start menu (you can turn this off in Settings → General). It also sits in the notification area: left-click the tray icon to show or hide the toolbar, right-click for Settings, Start with Windows and Quit.
 
 **Updates:** RiftPen checks GitHub for a new version 30 seconds after it starts and then every 6 hours. A new version downloads in the background, is checked against its SHA-256, and installs when you quit RiftPen. To install it straight away, right-click the tray icon → **Restart to update**, or use Settings → General → Updates (where you can also check now or turn automatic updates off).
@@ -14,7 +16,11 @@ An Epic Pen-style screen drawing tool for League of Legends. In **replays and sp
 - The toolbar collapses to just the Draw button when you're not drawing and expands when you start.
 - Each tool remembers its own color and size. The laser stays red and the highlighter yellow, for example.
 
+<p align="center"><img src="docs/screenshots/tool-wheel.png" width="320" alt="Tool wheel: colors on the inner ring, tools on the outer ring"></p>
+
 ## The toolbar
+
+![RiftPen toolbar](docs/screenshots/toolbar.png)
 
 | | |
 |---|---|
@@ -50,6 +56,10 @@ An Epic Pen-style screen drawing tool for League of Legends. In **replays and sp
 ## Rift Board
 
 A big Summoner's Rift with every champion on it, synced to the replay that's open in League. Open it with the globe button on the toolbar or `B` while drawing. Put it on a second monitor and coach from it while the replay runs.
+
+| Heatmap of where everyone spent the game | A jungler's path over the last 5 minutes |
+| --- | --- |
+| ![Rift Board heatmap](docs/screenshots/board-heatmap.webp) | ![Rift Board path of one jungler](docs/screenshots/board-path-jungler.webp) |
 
 - **Finds the game by itself:** it matches the open replay to its `.rofl` file (Documents\League of Legends\Replays), then loads Riot's timeline for that game from your League client: kills, towers, objectives, and per-minute gold, XP, CS and positions.
 - **Champion positions:** while the replay plays, RiftPen reads the minimap a few times a second (the screen only, nothing in the game's memory). It finds each icon by its blue or red team ring and learns what every champion's icon actually looks like, so custom skins work too. Learned icons are remembered across replays (up to four looks per champion, one per skin), so later games are recognised right away. Settings (⚙) → **Forget learned icons** starts over if champions keep getting mixed up. Positions are saved per game, so any part you've watched once can be scrubbed later. Readings that would mean a champion moved faster than they can (about 700 units/s plus one Flash or dash) are thrown out unless the next readings agree, which still lets Teleport and recalls through. When an icon is briefly hidden, the champion stays where it was last seen (slightly faded) instead of jumping. Parts you haven't watched are estimated from the timeline and drawn with a dashed ring. The green stripe on the timeline shows what has been recorded. Keep League's minimap visible: when another window covers it, recording pauses.
